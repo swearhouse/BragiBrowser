@@ -1,0 +1,1311 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Bragi Browser tests</title></head>
+<body>
+<h1>Bragi Browser tests</h1>
+<pre id="result">Running…</pre>
+<iframe title="Test client" src="../index.html" hidden></iframe>
+<script>
+"use strict";
+const result = document.getElementById("result");
+const frame = document.querySelector("iframe");
+const wait = async predicate => {
+  for (let i = 0; i < 100; i++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for the client.");
+};
+const check = (condition, text) => { if (!condition) throw new Error(text); };
+
+frame.addEventListener("load", async () => {
+  const w = frame.contentWindow;
+  const d = frame.contentDocument;
+  d.documentElement.style.transition = "none";
+  const el = id => d.getElementById(id);
+  const serverUrlKey = "bragi.serverUrl";
+  const usernameKey = "bragi.username";
+  const autoShuffleKey = "bragi.autoShuffle";
+  const visualizerKey = "bragi.visualizer";
+  const previousServerUrl = localStorage.getItem(serverUrlKey);
+  const previousUsername = localStorage.getItem(usernameKey);
+  const previousAutoShuffle = localStorage.getItem(autoShuffleKey);
+  const previousVisualizer = localStorage.getItem(visualizerKey);
+  const originalSetItem = w.Storage.prototype.setItem;
+  const originalImage = w.Image;
+  const originalSetTimeout = w.setTimeout;
+  const paletteRequests = [];
+  w.Image = function() {
+    const image = d.createElement("canvas");
+    image.width = image.height = 4;
+    image.getContext("2d").fillStyle = "#ff0000";
+    image.getContext("2d").fillRect(0, 0, 4, 4);
+    Object.defineProperty(image, "src", {set: value => { image.imageUrl = value; paletteRequests.push(image); }});
+    return image;
+  };
+  const videos = [
+    {name: "One", link: "https://youtu.be/abcdefghijk", thumbnail_url: "https://artwork.example/cover.png"},
+    {name: "Bad", link: "https://youtu.be/12345678901"},
+    {name: "One", link: "https://youtu.be/abcdefghijk", thumbnail_url: null}
+  ];
+  const queue = {id: "q", playlist_id: "p", name: "Mix", shuffled: false, videos};
+  let mode = "normal";
+  let badAttempts = 0;
+  let loads = 0;
+  let allowReplace = false;
+  let cancelled = false;
+  let resolveEntered = false;
+  let proxyEntered = false;
+  let proxyCancelled = false;
+  let lastLoad;
+  let finishLoad;
+  let finishLogin;
+  let finishCreate;
+  let finishAddSong;
+  let finishRemoveSong;
+  let finishReplaceSong;
+  let currentQueue = queue;
+  const createdPlaylists = [];
+  const initialPlaylists = [
+    {id: "p", name: "Mix", videos: videos.map(video => ({...video, thumbnail_url: "https://artwork.example/playlist.png"}))},
+    {id: "empty", name: "Empty", videos: []},
+    {id: "other", name: "Other", videos: [videos[0]]}
+  ];
+  const thumbnailUrl = "https://artwork.example/cover.png";
+  const thirdThumbnailUrl = "https://artwork.example/third.png";
+  const requests = [];
+  w.fetch = async (url, options) => {
+    const path = new URL(url).pathname;
+    requests.push({url, path, method: options.method, body: options.body, headers: options.headers, redirect: options.redirect, credentials: options.credentials});
+    const json = (body, status = 200) => new Response(JSON.stringify(body), {status, headers: {"Content-Type": "application/json"}});
+    if (path.endsWith("/playlists")) {
+      if (options.method === "POST") {
+        if (mode === "playlist-uncertain") throw new TypeError("network failure");
+        if (mode === "playlist-invalid") return json({}, 400);
+        const playlist = {id: `new-${createdPlaylists.length}`, name: JSON.parse(options.body).name, videos: []};
+        if (mode === "playlist-delay") {
+          return new Promise(resolve => { finishCreate = () => { createdPlaylists.push(playlist); resolve(json({playlist}, 201)); }; });
+        }
+        createdPlaylists.push(playlist);
+        return json({playlist}, 201);
+      }
+      if (mode === "invalid") return json({}, 401);
+      if (mode === "login-delay") await new Promise(resolve => { finishLogin = resolve; });
+      return json({playlists: [...initialPlaylists, ...createdPlaylists]});
+    }
+    if (path.includes("/playlists/") && path.endsWith("/tracks")) {
+      const id = decodeURIComponent(path.split("/").at(-2));
+      const collection = initialPlaylists.some(item => item.id === id) ? initialPlaylists : createdPlaylists;
+      const index = collection.findIndex(item => item.id === id);
+      if (index < 0) return json({}, 404);
+      if (options.method === "PATCH") {
+        const body = JSON.parse(options.body);
+        const current = collection[index].videos.map(video => ({name: video.name, link: video.link}));
+        if (JSON.stringify(body.videos) !== JSON.stringify(current)) return json({}, 409);
+        if (mode === "song-invalid") return json({}, 400);
+        if (mode === "song-title-failed") return json({}, 422);
+        const replace = () => {
+          const video = {name: "Replacement title", link: body.url, thumbnail_url: "https://artwork.example/replacement.png"};
+          collection[index] = {...collection[index], videos: collection[index].videos.map((item, position) => position === body.index ? video : item)};
+          return json({playlist: collection[index]});
+        };
+        if (mode === "replace-delay") return new Promise(resolve => { finishReplaceSong = () => resolve(replace()); });
+        if (mode === "replace-uncertain") { replace(); throw new TypeError("network failure"); }
+        if (mode === "replace-malformed") { replace(); return json({playlist: {id, name: "Other", videos: [null]}}); }
+        return replace();
+      }
+      if (options.method === "DELETE") {
+        const body = JSON.parse(options.body);
+        const current = collection[index].videos.map(video => ({name: video.name, link: video.link}));
+        if (JSON.stringify(body.videos) !== JSON.stringify(current)) return json({}, 409);
+        const remove = () => {
+          collection[index] = {...collection[index], videos: collection[index].videos.filter((_, position) => position !== body.index)};
+          return json({playlist: collection[index]});
+        };
+        if (mode === "remove-delay") return new Promise(resolve => { finishRemoveSong = () => resolve(remove()); });
+        if (mode === "remove-uncertain") { remove(); throw new TypeError("network failure"); }
+        return remove();
+      }
+      if (mode === "song-invalid") return json({}, 400);
+      if (mode === "song-title-failed") return json({}, 422);
+      if (mode === "song-full") return json({}, 409);
+      const add = () => {
+        const video = {name: "Fetched title", link: JSON.parse(options.body).url, thumbnail_url: "https://artwork.example/song.png"};
+        collection[index] = {...collection[index], videos: [...collection[index].videos, video]};
+        return json({playlist: collection[index]}, 201);
+      };
+      if (mode === "song-delay") return new Promise(resolve => { finishAddSong = () => resolve(add()); });
+      if (mode === "song-uncertain") { add(); throw new TypeError("network failure"); }
+      if (mode === "song-malformed") { add(); return json({playlist: {id, name: "Other", videos: [null]}}, 201); }
+      return add();
+    }
+    if (path.includes("/playlists/")) {
+      const id = decodeURIComponent(path.split("/").pop());
+      const collection = initialPlaylists.some(item => item.id === id) ? initialPlaylists : createdPlaylists;
+      const index = collection.findIndex(item => item.id === id);
+      if (index < 0) return json({}, 404);
+      if (mode === "playlist-invalid") return json({}, 400);
+      if (options.method === "PATCH") {
+        collection[index] = {...collection[index], name: JSON.parse(options.body).name};
+        if (mode === "playlist-uncertain") throw new TypeError("network failure");
+        return json({playlist: collection[index]});
+      }
+      if (options.method === "DELETE") {
+        collection.splice(index, 1);
+        if (mode === "playlist-uncertain") throw new TypeError("network failure");
+        return new Response(null, {status: 204});
+      }
+    }
+    if (path.endsWith("/queue")) {
+      if (mode === "uncertain" && options.method === "POST") throw new TypeError("network failure");
+      if (options.method === "POST") {
+        const shuffled = JSON.parse(options.body).shuffle;
+        currentQueue = mode === "tail-bad"
+          ? {...queue, id: "tail-bad", videos: [videos[0], videos[2], videos[1]]}
+          : shuffled
+            ? {...queue, id: "shuffled", shuffled: true, videos: [videos[1], videos[0], videos[2]]}
+            : queue;
+      }
+      return json({queue: currentQueue}, options.method === "POST" ? 201 : 200);
+    }
+    if (path.endsWith("/resolve")) {
+      if (mode === "delay") {
+        resolveEntered = true;
+        return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => {
+          cancelled = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        }));
+      }
+      if (JSON.parse(options.body).url.endsWith("12345678901")) {
+        badAttempts++;
+        return json({}, 422);
+      }
+      return json({audio: {url: "https://media.example/signed-secret", title: "One", content_type: "audio/mp4"}});
+    }
+    if (path.endsWith("/audio-proxy")) {
+      if (mode === "proxy-delay") {
+        proxyEntered = true;
+        return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => {
+          proxyCancelled = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        }));
+      }
+      if (mode === "proxy-failed") return json({}, 503);
+      if (mode === "proxy-auth") return json({}, 401);
+      if (mode === "invalid-proxy") return json({proxy_url: "https://evil.example/api/v1/audio-stream?token=proxy-secret", expires_in: 21600});
+      return json({proxy_url: "/api/v1/audio-stream?token=proxy-secret", expires_in: 21600});
+    }
+    throw new Error("Unexpected request");
+  };
+  const audio = el("audio");
+  let localPaused = true;
+  let localTime = 0;
+  let localError = null;
+  let spectrumLevel = 0;
+  let lowFrequencyOnly = false;
+  let descendingSpectrum = false;
+  let captures = 0;
+  let stoppedCaptures = 0;
+  w.AudioContext = class {
+    constructor() { this.state = "running"; this.destination = {}; }
+    createMediaStreamSource() { return {connect() {}, disconnect() {}}; }
+    createAnalyser() { return {fftSize: 256, frequencyBinCount: 128, connect() {}, disconnect() {},
+      getByteFrequencyData(data) {
+        data.fill(lowFrequencyOnly || descendingSpectrum ? 0 : spectrumLevel);
+        if (lowFrequencyOnly || descendingSpectrum) {
+          for (let i = 0; i < 4; i++) data[i] = descendingSpectrum ? spectrumLevel * (4 - i) / 4 : spectrumLevel;
+        }
+      }}; }
+    createGain() { return {gain: {value: 1}, connect() {}, disconnect() {}}; }
+    resume() { this.state = "running"; return Promise.resolve(); }
+  };
+  audio.captureStream = () => {
+    captures++;
+    const track = {stop: () => { stoppedCaptures++; }};
+    return {getTracks: () => [track], getAudioTracks: () => [track]};
+  };
+  Object.defineProperty(audio, "paused", {get: () => localPaused});
+  Object.defineProperty(audio, "duration", {get: () => 180});
+  Object.defineProperty(audio, "currentTime", {get: () => localTime, set: value => { localTime = value; }});
+  Object.defineProperty(audio, "error", {get: () => localError});
+  Object.defineProperty(audio, "readyState", {get: () => 2});
+  w.HTMLMediaElement.prototype.play = function() { localPaused = false; this.dispatchEvent(new w.Event("play")); this.dispatchEvent(new w.Event("playing")); return Promise.resolve(); };
+  w.HTMLMediaElement.prototype.pause = function() { localPaused = true; this.dispatchEvent(new w.Event("pause")); };
+  w.HTMLMediaElement.prototype.load = () => {};
+  try {
+    const sample = d.createElement("canvas");
+    sample.width = sample.height = 10;
+    const sampleContext = sample.getContext("2d");
+    sampleContext.fillStyle = "#ff0000";
+    sampleContext.fillRect(0, 0, 8, 10);
+    sampleContext.fillStyle = "#0000ff";
+    sampleContext.fillRect(8, 0, 2, 10);
+    check(w.eval("artworkAccent")(sample) === "hsl(0 55% 80%)", "Accent did not follow the dominant artwork color.");
+    sampleContext.fillStyle = "#808080";
+    sampleContext.fillRect(0, 0, 10, 10);
+    check(w.eval("artworkAccent")(sample) === "hsl(0 0% 80%)", "Grayscale artwork did not produce a neutral accent.");
+    localStorage.removeItem(serverUrlKey);
+    localStorage.removeItem(usernameKey);
+    localStorage.removeItem(autoShuffleKey);
+    localStorage.removeItem(visualizerKey);
+    const defaultFrame = document.createElement("iframe");
+    defaultFrame.hidden = true;
+    defaultFrame.src = "../index.html";
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Timed out loading a fresh client.")), 5000);
+      defaultFrame.addEventListener("load", () => { clearTimeout(timer); resolve(); }, {once: true});
+      document.body.append(defaultFrame);
+    });
+    check(!defaultFrame.contentDocument.getElementById("auto-shuffle").checked, "Auto shuffle should default to off.");
+    check(defaultFrame.contentDocument.getElementById("visualizer-mode").value === "bars", "The visualizer should default to spectrum bars.");
+    check(!defaultFrame.contentDocument.getElementById("server").readOnly &&
+      !defaultFrame.contentDocument.getElementById("username").readOnly, "Unsaved connection fields should be editable.");
+    defaultFrame.remove();
+    el("open-settings").click();
+    check(!el("settings-panel").hidden && el("login-panel").hidden, "Settings did not open from the login page.");
+    el("visualizer-mode").value = "wave";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    check(localStorage.getItem(visualizerKey) === "wave", "Visualizer mode was not saved.");
+    el("auto-shuffle").checked = true;
+    el("auto-shuffle").dispatchEvent(new w.Event("change"));
+    check(localStorage.getItem(autoShuffleKey) === "true", "Auto shuffle was not saved.");
+    el("close-settings").click();
+    check(!el("login-panel").hidden && el("settings-panel").hidden, "Settings did not return to login.");
+    localStorage.setItem(serverUrlKey, "http://old.example");
+    const legacyFrame = document.createElement("iframe");
+    legacyFrame.hidden = true;
+    legacyFrame.src = "../index.html";
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Timed out loading a fresh client.")), 5000);
+      legacyFrame.addEventListener("load", () => { clearTimeout(timer); resolve(); }, {once: true});
+      document.body.append(legacyFrame);
+    });
+    const legacy = legacyFrame.contentDocument;
+    check(legacy.getElementById("server").readOnly && !legacy.getElementById("username").readOnly,
+      "A previously saved server URL blocked entry of an unsaved username.");
+    legacy.getElementById("edit-connection").click();
+    check(!legacy.getElementById("server").readOnly && !legacy.getElementById("username").readOnly,
+      "Edit did not unlock partially saved connection details.");
+    legacyFrame.remove();
+    localStorage.setItem(usernameKey, "previous-user");
+    el("server").value = "ftp://server.example";
+    el("username").value = "alice";
+    el("password").value = "secret";
+    el("login-form").requestSubmit();
+    await wait(() => el("status").textContent.includes("HTTP or HTTPS server URL"));
+    check(requests.length === 0, "Unsupported server scheme was contacted.");
+    el("server").value = "https://server.example";
+    mode = "invalid";
+    el("login-form").requestSubmit();
+    await wait(() => el("status").textContent.includes("Authentication failed"));
+    check(el("library").hidden, "Invalid credentials signed in.");
+    check(localStorage.getItem(serverUrlKey) === "http://old.example", "Failed login replaced the saved server URL.");
+    check(localStorage.getItem(usernameKey) === "previous-user", "Failed login replaced the saved username.");
+    mode = "login-delay";
+    el("server").value = "http://server.example:8000";
+    el("password").value = "secret";
+    el("login-form").requestSubmit();
+    await wait(() => typeof finishLogin === "function");
+    el("open-settings").click();
+    finishLogin();
+    await wait(() => !el("signout").hidden);
+    check(!el("settings-panel").hidden && el("library").hidden, "Login interrupted the open settings view.");
+    el("close-settings").click();
+    await wait(() => !el("library").hidden);
+    mode = "normal";
+    check(localStorage.getItem(serverUrlKey) === "http://server.example:8000", "Successful login did not save the server URL.");
+    check(localStorage.getItem(usernameKey) === "alice", "Successful login did not save the username.");
+    const reloadFrame = document.createElement("iframe");
+    reloadFrame.hidden = true;
+    reloadFrame.src = "../index.html";
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Timed out loading a fresh client.")), 5000);
+      reloadFrame.addEventListener("load", () => { clearTimeout(timer); resolve(); }, {once: true});
+      document.body.append(reloadFrame);
+    });
+    check(reloadFrame.contentDocument.getElementById("server").value === "http://server.example:8000", "A fresh client did not prefill the saved server URL.");
+    const reloadDoc = reloadFrame.contentDocument;
+    check(reloadDoc.getElementById("username").value === "alice" && reloadDoc.getElementById("server").readOnly &&
+      reloadDoc.getElementById("username").readOnly, "Saved connection details were not prefilled read-only.");
+    check(reloadDoc.getElementById("password").value === "", "A fresh client restored the password.");
+    reloadDoc.getElementById("edit-connection").click();
+    check(!reloadDoc.getElementById("server").readOnly && !reloadDoc.getElementById("username").readOnly &&
+      reloadDoc.getElementById("edit-connection").textContent.includes("Lock"), "Edit did not unlock connection details.");
+    reloadDoc.getElementById("username").value = "";
+    reloadDoc.getElementById("edit-connection").click();
+    check(reloadDoc.getElementById("server").readOnly && reloadDoc.getElementById("username").readOnly &&
+      reloadDoc.getElementById("edit-connection").textContent.includes("Edit"), "Lock did not make both fields read-only.");
+    reloadDoc.getElementById("password").value = "secret";
+    reloadDoc.getElementById("login-form").requestSubmit();
+    await wait(() => reloadDoc.getElementById("status").textContent.includes("Enter a username"));
+    check(localStorage.getItem(usernameKey) === "alice", "Editing without connecting changed the saved username.");
+    check(reloadFrame.contentDocument.getElementById("auto-shuffle").checked, "A fresh client did not restore auto shuffle.");
+    check(reloadFrame.contentDocument.getElementById("visualizer-mode").value === "wave", "A fresh client did not restore the visualizer.");
+    reloadFrame.remove();
+    el("open-settings").click();
+    check(!el("settings-panel").hidden && el("library").hidden, "Settings did not open from the library.");
+    el("auto-shuffle").checked = false;
+    el("auto-shuffle").dispatchEvent(new w.Event("change"));
+    check(localStorage.getItem(autoShuffleKey) === "false", "Disabling auto shuffle was not saved.");
+    el("visualizer-mode").value = "bars";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    check(!el("library").hidden && el("settings-panel").hidden, "Settings did not return to the library.");
+    const disabledFrame = document.createElement("iframe");
+    disabledFrame.hidden = true;
+    disabledFrame.src = "../index.html";
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Timed out loading a fresh client.")), 5000);
+      disabledFrame.addEventListener("load", () => { clearTimeout(timer); resolve(); }, {once: true});
+      document.body.append(disabledFrame);
+    });
+    check(!disabledFrame.contentDocument.getElementById("auto-shuffle").checked, "A fresh client did not restore disabled auto shuffle.");
+    disabledFrame.remove();
+    check(requests.some(r => r.url === "http://server.example:8000/api/v1/playlists"), "HTTP server was not contacted.");
+    check(requests.some(r => r.url === "https://server.example/api/v1/playlists"), "HTTPS server was not contacted.");
+    check(el("password").value === "", "Password was not cleared.");
+    check(!d.querySelector(".account-bar").textContent.includes("Signed in as"), "The header still displays the account name.");
+    check(!el("cancel"), "The removed preparation button is still present.");
+    check(d.querySelectorAll(".playlist-button").length === 3, "Playlist list was not rendered.");
+    check(el("play-selected").closest(".sidebar"), "Play playlist was not placed in the playlist sidebar.");
+    el("toggle-sidebar").querySelector("img").click();
+    check(el("playlist-sidebar").hidden && el("library").classList.contains("sidebar-hidden") &&
+      el("toggle-sidebar").getAttribute("aria-expanded") === "false", "Logo did not hide the playlist sidebar.");
+    el("toggle-sidebar").querySelector("span").click();
+    check(!el("playlist-sidebar").hidden && !el("library").classList.contains("sidebar-hidden") &&
+      el("toggle-sidebar").getAttribute("aria-expanded") === "true", "Bragi name did not restore the playlist sidebar.");
+    check(!el("track-search").disabled, "Search was disabled before choosing a playlist.");
+    el("track-search").value = "one";
+    el("track-search").dispatchEvent(new w.Event("input", {bubbles: true}));
+    check(el("tracks-empty").textContent.includes("Choose a playlist"), "Searching without a playlist showed the wrong message.");
+    d.querySelectorAll(".playlist-button")[1].click();
+    check(el("play-selected").disabled, "Empty playlist should not be playable.");
+    check(el("tracks-empty").textContent.includes("no tracks"), "Empty playlist was not displayed.");
+    check(el("playlist-title").textContent === "Empty - (0 songs)", "Empty playlist count was not displayed.");
+    d.querySelector(".playlist-button").click();
+    check(d.querySelectorAll("#tracks li").length === 3, "Selected playlist tracks were not displayed.");
+    const numberedTrack = d.querySelector(".track-button");
+    const previousNumber = numberedTrack.dataset.trackNumber;
+    numberedTrack.dataset.trackNumber = "99999";
+    const numberStyle = w.getComputedStyle(numberedTrack, "::before");
+    const numberCanvas = d.createElement("canvas").getContext("2d");
+    numberCanvas.font = numberStyle.font;
+    check(numberStyle.whiteSpace === "nowrap" && parseFloat(numberStyle.width) >= numberCanvas.measureText("99999").width,
+      "Five-digit track numbers do not fit in their column.");
+    numberedTrack.dataset.trackNumber = previousNumber;
+    check([...d.querySelectorAll("#tracks li")].filter(item => !item.hidden).length === 2,
+      "A search entered before selecting a playlist was not applied.");
+    check(el("playlist-title").textContent === "Mix - (3 songs)", "Playlist count was not displayed.");
+    check(!requests.some(r => r.path.endsWith("/queue")), "Selecting a playlist unexpectedly created a queue.");
+    const searchTracks = value => {
+      el("track-search").value = value;
+      el("track-search").dispatchEvent(new w.Event("input", {bubbles: true}));
+    };
+    const visibleTracks = () => [...d.querySelectorAll("#tracks li")].filter(item => !item.hidden);
+    searchTracks("  bAd  ");
+    check(visibleTracks().length === 1 && visibleTracks()[0].textContent.includes("Bad") &&
+      visibleTracks()[0].querySelector(".track-button").dataset.trackNumber === "2",
+      "Search did not filter case-insensitively or preserve the original track number.");
+    check(el("playlist-title").textContent === "Mix - (3 songs)", "Searching changed the total song count.");
+    searchTracks("missing");
+    check(!visibleTracks().length && el("tracks-empty").textContent.includes("No songs match"),
+      "A search with no matches did not show an empty result.");
+    d.querySelectorAll(".playlist-button")[1].click();
+    check(el("tracks-empty").textContent.includes("no tracks"), "Searching an empty playlist showed the wrong message.");
+    d.querySelector(".playlist-button").click();
+    searchTracks("");
+    check(visibleTracks().length === 3 && el("tracks-empty").hidden, "Clearing search did not restore all songs.");
+
+    el("play-selected").click();
+    await wait(() => el("queue-status").textContent.includes("(1 of 3)"));
+    await wait(() => !el("play-selected").disabled);
+    check(el("playlist-title").textContent === "Mix - (3 songs) · server queue", "Queue count or label was not displayed.");
+    check(d.querySelectorAll(".edit-song").length === 0, "A playback queue exposed song editing buttons.");
+    check(!currentQueue.shuffled, "Disabled auto shuffle created a shuffled queue.");
+    check(el("player-title").textContent === "One", "Local track was not displayed for local output.");
+    check(d.querySelectorAll(".track-button[aria-current=true]").length === 1 &&
+      d.querySelectorAll(".track-button")[0].getAttribute("aria-current") === "true", "The current local queue track was not highlighted.");
+    searchTracks("bad");
+    check(visibleTracks().length === 1 && visibleTracks()[0].textContent.includes("Bad"),
+      "Search did not filter the displayed playback queue.");
+    searchTracks("one");
+    check(visibleTracks().length === 2 && visibleTracks()[0].querySelector("[aria-current=true]"),
+      "Search lost the current-track highlight.");
+    searchTracks("");
+    d.querySelectorAll(".playlist-button")[2].click();
+    check(el("playlist-title").textContent === "Other - (1 song)", "Single-song playlist count was not displayed.");
+    check(!d.querySelector(".track-button[aria-current=true]"), "The same track in another playlist was incorrectly highlighted.");
+    d.querySelector(".playlist-button").click();
+    check(d.querySelectorAll(".track-button")[0].getAttribute("aria-current") === "true", "Returning to the playlist lost the current highlight.");
+    check(el("player-artwork").getAttribute("src") === thumbnailUrl, "Queue artwork was not requested for local playback.");
+    const defaultButtonColor = w.getComputedStyle(el("play-selected")).backgroundColor;
+    const defaultPrimaryColor = w.getComputedStyle(el("login-button")).backgroundColor;
+    const defaultPageGradient = w.getComputedStyle(d.body).backgroundImage;
+    const defaultPlaylistGradient = w.getComputedStyle(d.querySelector(".queue-card")).backgroundImage;
+    el("player-artwork").dispatchEvent(new w.Event("load"));
+    check(!el("player-artwork").hidden && el("artwork-placeholder").hidden, "Loaded artwork was not displayed.");
+    check(paletteRequests[0].crossOrigin === "anonymous" && paletteRequests[0].imageUrl === thumbnailUrl, "Artwork was not sampled with cross-origin access.");
+    paletteRequests[0].onload();
+    check(d.documentElement.style.getPropertyValue("--accent") === "hsl(0 55% 80%)", "Red artwork did not set a red accent.");
+    check(w.getComputedStyle(el("play-selected")).backgroundColor === defaultButtonColor &&
+      defaultButtonColor === w.getComputedStyle(el("add-song")).backgroundColor,
+      "Play playlist did not retain the generic button color.");
+    check(w.getComputedStyle(el("login-button")).backgroundColor !== defaultPrimaryColor, "Primary buttons did not use the artwork accent.");
+    check(w.getComputedStyle(d.body).backgroundImage !== defaultPageGradient, "The page gradient did not use the artwork accent.");
+    check(w.getComputedStyle(d.querySelector(".queue-card")).backgroundImage !== defaultPlaylistGradient, "The playlist gradient did not use the artwork accent.");
+    check(el("player-background").getAttribute("src") === thumbnailUrl, "Background did not use the current artwork.");
+    el("player-background").dispatchEvent(new w.Event("load"));
+    check(!el("player-background").hidden, "Loaded background artwork was not displayed.");
+    el("player-artwork").dispatchEvent(new w.Event("load"));
+    const pendingAccent = paletteRequests[paletteRequests.length - 1];
+    el("player-artwork").dispatchEvent(new w.Event("error"));
+    check(el("player-artwork").hidden && !el("artwork-placeholder").hidden, "Failed artwork did not restore the placeholder.");
+    check(el("player-background").hidden && !el("player-background").hasAttribute("src"), "Failed artwork left a stale background.");
+    pendingAccent.onload();
+    check(!d.documentElement.style.getPropertyValue("--accent"), "A stale artwork sample replaced the default accent.");
+    check(w.getComputedStyle(d.body).backgroundImage === defaultPageGradient &&
+      w.getComputedStyle(d.querySelector(".queue-card")).backgroundImage === defaultPlaylistGradient, "Gradients did not return to the default accent.");
+    check(el("activity").textContent.includes("Could not load track artwork"), "Artwork loading failure was not logged.");
+    check(el("play-pause-icon").textContent === "pause", "Local playing state was not displayed.");
+    check(audio.crossOrigin === "anonymous" && captures > 0 && !el("visualizer").hidden, "CORS-enabled playback did not start the visualizer.");
+    check(audio.src === "http://server.example:8000/api/v1/audio-stream?token=proxy-secret", "Local playback did not use the server proxy.");
+    const proxyRequest = requests.find(r => r.path.endsWith("/audio-proxy"));
+    check(proxyRequest.method === "POST" && JSON.parse(proxyRequest.body).url === "https://media.example/signed-secret" &&
+      proxyRequest.headers.Authorization.startsWith("Basic "), "The proxy request did not use the resolved URL and account authentication.");
+    el("open-settings").click();
+    check(!localPaused, "Opening settings stopped playback.");
+    check(stoppedCaptures > 0 && el("visualizer").hidden, "Opening settings did not release the capture.");
+    el("visualizer-mode").value = "off";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    check(el("visualizer").hidden && !localPaused, "Turning the visualizer off changed playback.");
+    el("open-settings").click();
+    el("visualizer-mode").value = "wave";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    check(!el("visualizer").hidden && !localPaused, "Turning the visualizer back on did not resume analysis.");
+    const canvas = el("visualizer");
+    canvas.getBoundingClientRect = () => ({width: 160, height: 100});
+    const measureSpectrum = level => {
+      spectrumLevel = level;
+      w.eval("cancelAnimationFrame(visualizer.frame); drawVisualizer();");
+      const {width, height} = canvas;
+      const pixels = canvas.getContext("2d").getImageData(0, 0, width, height).data;
+      const quadrants = [0, 0, 0, 0];
+      let center = 0, total = 0, leftEdge = 0, rightEdge = 0, centerLeft = 0, centerRight = 0;
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        if (!pixels[(y * width + x) * 4 + 3]) continue;
+        total++;
+        quadrants[(y >= height / 2 ? 2 : 0) + (x >= width / 2 ? 1 : 0)]++;
+        if (Math.abs(x - width / 2) < height * 0.08 && Math.abs(y - height / 2) < height * 0.08) center++;
+        if (x < width * 0.1) leftEdge++;
+        if (x >= width * 0.9) rightEdge++;
+        if (x >= width * 0.4 && x < width * 0.5) centerLeft++;
+        if (x >= width * 0.5 && x < width * 0.6) centerRight++;
+      }
+      return {total, quadrants, center, leftEdge, rightEdge, centerLeft, centerRight};
+    };
+    check(w.getComputedStyle(canvas).filter === "blur(10px) saturate(1.4)", "The visualizer filter was not applied.");
+    for (const mode of ["bars", "mirrored", "radial"]) {
+      el("open-settings").click();
+      el("visualizer-mode").value = mode;
+      el("visualizer-mode").dispatchEvent(new w.Event("change"));
+      el("close-settings").click();
+      check(localStorage.getItem(visualizerKey) === mode && !localPaused, `${mode} was not saved or changed playback.`);
+      const fresh = document.createElement("iframe");
+      fresh.hidden = true;
+      fresh.src = "../index.html";
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Timed out loading a fresh client.")), 5000);
+        fresh.addEventListener("load", () => { clearTimeout(timer); resolve(); }, {once: true});
+        document.body.append(fresh);
+      });
+      check(fresh.contentDocument.getElementById("visualizer-mode").value === mode, `${mode} was not restored.`);
+      fresh.remove();
+      const active = measureSpectrum(200);
+      const silent = measureSpectrum(0);
+      check(active.total > 0 && silent.total === 0, `${mode} did not respond to spectrum data.`);
+      if (mode === "mirrored") {
+        const top = active.quadrants[0] + active.quadrants[1];
+        const bottom = active.quadrants[2] + active.quadrants[3];
+        check(Math.abs(top - bottom) < active.total * 0.05, "Mirrored bars were not symmetric.");
+        descendingSpectrum = true;
+        const bass = measureSpectrum(200);
+        descendingSpectrum = false;
+        check(bass.centerLeft > bass.leftEdge && bass.centerRight > bass.rightEdge &&
+          bass.leftEdge > 0 && bass.rightEdge > 0,
+          "Mirrored bars did not radiate from the center across the full width.");
+      } else if (mode === "radial") {
+        check(active.quadrants.every(count => count > 0) && active.center === 0, "Radial spectrum did not surround a clear center.");
+      } else {
+        lowFrequencyOnly = true;
+        const bass = measureSpectrum(200);
+        lowFrequencyOnly = false;
+        check(bass.leftEdge > 0 && bass.rightEdge > 0,
+          "Spectrum bars did not fill the width when high frequencies were quiet.");
+      }
+    }
+    delete canvas.getBoundingClientRect;
+    el("open-settings").click();
+    el("visualizer-mode").value = "wave";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    check(!localPaused && el("player-title").textContent === "One", "Returning from settings changed playback.");
+    el("play-pause").click();
+    check(localPaused && el("play-pause-icon").textContent === "play_arrow", "Local pause did not update controls.");
+    check(d.querySelectorAll(".track-button")[0].getAttribute("aria-current") === "true", "Pausing cleared the current track highlight.");
+    el("play-pause").click();
+    check(!localPaused, "Local play was not invoked.");
+    el("seek").value = "35";
+    el("seek").dispatchEvent(new w.Event("input"));
+    el("seek").dispatchEvent(new w.Event("change"));
+    check(localTime === 35, "Local seek did not update audio.");
+    localError = {code: 4};
+    audio.dispatchEvent(new w.Event("error"));
+    localError = null;
+    check(!audio.hasAttribute("crossorigin") && !localPaused && el("visualizer-status").textContent.includes("unavailable"), "CORS playback failure did not retry without analysis.");
+    check(audio.src === "https://media.example/signed-secret", "A proxy playback failure did not restore the direct audio URL.");
+    localTime = 0;
+    audio.dispatchEvent(new w.Event("loadedmetadata"));
+    check(localTime === 35, "Visualizer fallback did not restore the playback position.");
+    el("volume").value = "0.4";
+    el("volume").dispatchEvent(new w.Event("input"));
+    el("volume").dispatchEvent(new w.Event("change"));
+    check(audio.volume === 0.4 && el("volume-value").textContent === "40%", "Local volume did not update.");
+    el("mute").click();
+    check(audio.muted && audio.volume === 0.4 && el("mute").getAttribute("aria-label") === "Unmute" &&
+      el("mute-icon").textContent === "volume_off", "Local mute changed volume or did not update the control.");
+    el("mute").click();
+    check(!audio.muted && audio.volume === 0.4 && el("volume-value").textContent === "40%" &&
+      el("mute").getAttribute("aria-label") === "Mute", "Local unmute did not restore the previous volume.");
+    mode = "proxy-failed";
+    el("next").click();
+    await wait(() => el("queue-status").textContent.includes("(3 of 3)"));
+    await wait(() => !el("play-selected").disabled);
+    check(badAttempts === 3, "A failed track should have exactly three resolution attempts.");
+    check(audio.src === "https://media.example/signed-secret" && !audio.hasAttribute("crossorigin") && !localPaused &&
+      el("visualizer-status").textContent.includes("unavailable") && el("activity").textContent.includes("Could not prepare the audio proxy"),
+      "A proxy creation failure did not fall back to direct playback.");
+    mode = "normal";
+    const captureStream = audio.captureStream;
+    audio.captureStream = undefined;
+    el("open-settings").click();
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    check(el("visualizer-status").textContent.includes("not supported") && !localPaused, "Unsupported analysis interrupted playback or was not reported.");
+    audio.captureStream = captureStream;
+    el("open-settings").click();
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    check(d.querySelectorAll(".track-button")[2].getAttribute("aria-current") === "true" &&
+      d.querySelectorAll(".track-button[aria-current=true]").length === 1, "The highlight did not follow a skipped track.");
+    check(!el("player-artwork").hasAttribute("src") && !el("artwork-placeholder").hidden, "Missing artwork did not clear the previous image.");
+    check(el("player-background").hidden && !el("player-background").hasAttribute("src"), "Missing artwork left a stale background.");
+    check(el("activity").textContent.includes("Skipped"), "Failed track was not logged.");
+    check(!el("activity").textContent.includes("signed-secret"), "Activity leaked a media URL.");
+    videos[2].thumbnail_url = "javascript:alert(1)";
+    d.querySelector(".playlist-button").click();
+    check(d.querySelectorAll(".track-button")[2].getAttribute("aria-current") === "true", "The second duplicate was not highlighted in the playlist.");
+    searchTracks("one");
+    check(visibleTracks().length === 2 && visibleTracks()[1].querySelector("[aria-current=true]"),
+      "Filtering lost the second duplicate's highlight.");
+    visibleTracks()[1].querySelector(".track-button").click();
+    await wait(() => el("queue-status").textContent.includes("(3 of 3)"));
+    await wait(() => !el("play-selected").disabled);
+    searchTracks("");
+    check(requests.filter(r => r.path.endsWith("/resolve")).length === 6, "Selected duplicate did not start directly.");
+    check(!el("player-artwork").hasAttribute("src") && el("activity").textContent.includes("Invalid artwork URL"), "Unsafe artwork URL was not rejected.");
+    videos[2].thumbnail_url = thirdThumbnailUrl;
+    d.querySelector(".playlist-button").click();
+    el("open-settings").click();
+    el("auto-shuffle").checked = true;
+    el("auto-shuffle").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    d.querySelectorAll(".track-button")[2].click();
+    await wait(() => el("queue-status").textContent.includes("(3 of 3)"));
+    await wait(() => !el("play-selected").disabled);
+    check(currentQueue.shuffled, "Selected track did not use server shuffle.");
+    el("open-settings").click();
+    el("auto-shuffle").checked = false;
+    el("auto-shuffle").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    const postCount = requests.filter(r => r.path.endsWith("/queue") && r.method === "POST").length;
+    d.querySelectorAll(".track-button")[1].click();
+    await wait(() => el("queue-status").textContent.includes("(2 of 3)"));
+    await wait(() => !el("play-selected").disabled);
+    check(requests.filter(r => r.path.endsWith("/queue") && r.method === "POST").length === postCount, "Selecting a queue track replaced the queue.");
+    el("next").click();
+    await wait(() => el("queue-status").textContent.includes("(3 of 3)"));
+    await wait(() => !el("play-selected").disabled);
+    el("previous").click();
+    await wait(() => el("queue-status").textContent.includes("(2 of 3)"));
+    await wait(() => !el("play-selected").disabled);
+    currentQueue = {...queue, id: "changed"};
+    d.querySelectorAll(".track-button")[0].click();
+    await wait(() => el("status").textContent.includes("server queue changed"));
+    await wait(() => !el("play-selected").disabled);
+    d.querySelectorAll(".playlist-button")[1].click();
+    check(el("play-selected").disabled, "Empty playlist became playable.");
+    check(!d.querySelector(".track-button[aria-current=true]"), "An unrelated playlist showed a current track.");
+    d.querySelector(".playlist-button").click();
+
+    mode = "uncertain";
+    el("play-selected").click();
+    await wait(() => el("status").textContent.includes("outcome is uncertain"));
+    check(el("queue-status").textContent.includes("may or may not"), "Uncertain queue was presented as confirmed.");
+    check(requests.some(r => r.path.endsWith("/queue") && r.method === "GET"), "Current queue was not checked.");
+    await wait(() => !el("play-selected").disabled);
+
+    mode = "proxy-delay";
+    el("play-selected").click();
+    await wait(() => proxyEntered);
+    el("signout").click();
+    await wait(() => proxyCancelled);
+    check(el("status").textContent.includes("Signed out") && el("library").hidden, "Sign-out did not cancel proxy preparation.");
+
+    mode = "normal";
+    el("password").value = "secret";
+    el("login-form").requestSubmit();
+    await wait(() => !el("library").hidden);
+    d.querySelector(".playlist-button").click();
+    el("play-selected").click();
+    await wait(() => el("queue-status").textContent.includes("(1 of 3)"));
+    await wait(() => !el("play-selected").disabled);
+    check(el("output-status").textContent === "This browser" && !localPaused, "Playback did not default to the browser.");
+    check(!el("receiver-status"), "The player card still shows a separate receiver-status line.");
+    const playingBeforeSidebarToggle = audio.src;
+    el("toggle-sidebar").click();
+    check(el("playlist-sidebar").hidden && !localPaused && audio.src === playingBeforeSidebarToggle,
+      "Hiding the sidebar changed playback.");
+    el("toggle-sidebar").click();
+
+    let remoteVolume = 0.65;
+    let remoteMuted = false;
+    let rejectMute = false;
+    let delayMute = false;
+    let finishMute;
+    let remoteTime = 20;
+    let seekSupported = true;
+    let rejectSeek = false;
+    let rejectVolume = false;
+    let remoteCommand = "";
+    const media = {
+      playerState: "PLAYING", currentItemId: 1, media: {duration: 200, metadata: {title: "Existing"}},
+      addUpdateListener() {}, removeUpdateListener() {},
+      getEstimatedTime: () => remoteTime,
+      supportsCommand: () => seekSupported,
+      seek: (request, resolve, reject) => {
+        if (rejectSeek) reject(); else { remoteTime = request.currentTime; resolve(); }
+      },
+      pause: (request, resolve) => { remoteCommand = "pause"; resolve(); },
+      play: (request, resolve) => { remoteCommand = "play"; resolve(); },
+      stop: (request, resolve) => { remoteCommand = "stop"; resolve(); },
+      queueNext: resolve => { remoteCommand = "next"; resolve(); },
+      queuePrev: resolve => { remoteCommand = "previous"; resolve(); }
+    };
+    const session = {
+      getMediaSession: () => media, getCastDevice: () => ({friendlyName: "Test"}),
+      getVolume: () => remoteVolume,
+      setVolume: async value => { if (rejectVolume) throw new Error("failed"); remoteVolume = value; },
+      isMute: () => remoteMuted,
+      setMute: async value => {
+        if (rejectMute) throw new Error("failed");
+        if (delayMute) await new Promise(resolve => { finishMute = resolve; });
+        remoteMuted = value;
+      },
+      addEventListener() {}, removeEventListener() {}, loadMedia: async request => {
+        loads++;
+        lastLoad = request;
+        check(request.queueData.items.length === 2, "Cast queue lost duplicates or included skipped tracks.");
+        if (mode === "load-delay") await new Promise(resolve => { finishLoad = resolve; });
+        media.currentItemId = request.queueData.startIndex + 101;
+        media.items = request.queueData.items.map((item, index) => ({...item, itemId: index + 101}));
+        media.media = request.queueData.items[request.queueData.startIndex].media;
+      }
+    };
+    w.cast = {framework: {SessionEventType: {MEDIA_SESSION: "media", VOLUME_CHANGED: "volume"}}};
+    w.chrome.cast = {Image: class { constructor(url) { this.url = url; } }, media: {
+      MediaInfo: class { constructor(url, type) { this.url = url; this.type = type; } },
+      MusicTrackMediaMetadata: class {}, QueueItem: class { constructor(media) { this.media = media; } },
+      QueueData: class {}, LoadRequest: class { constructor(media) { this.media = media; } },
+      RepeatMode: {REPEAT_OFF: "off"}, MediaCommand: {SEEK: "seek"},
+      SeekRequest: class {}, PauseRequest: class {}, PlayRequest: class {}, StopRequest: class {}
+    }};
+    w.testSession = session;
+    w.currentSession = session;
+    w.confirm = () => allowReplace;
+    w.eval("state.castContext = {getCurrentSession: () => window.currentSession}; updateCast();");
+    check(el("output-status").textContent === "Test", "Connected receiver was not automatically selected.");
+    check(el("cast-status").textContent === "Connected: Test", "The header did not retain the Cast connection status.");
+    delayMute = true;
+    el("mute").click();
+    await wait(() => typeof finishMute === "function");
+    check(el("mute").disabled && el("volume").disabled, "Pending Cast mute did not disable volume controls.");
+    finishMute();
+    await wait(() => !el("mute").disabled);
+    check(remoteMuted && remoteVolume === 0.65 && !audio.muted && audio.volume === 0.4 &&
+      el("mute").getAttribute("aria-label") === "Unmute", "Cast mute changed volume or local audio.");
+    delayMute = false;
+    el("mute").click();
+    await wait(() => !remoteMuted && !el("mute").disabled);
+    check(remoteVolume === 0.65 && el("mute-icon").textContent === "volume_up", "Cast unmute did not restore the receiver level.");
+    remoteMuted = true;
+    w.eval("updateCast()");
+    check(el("mute").getAttribute("aria-label") === "Unmute", "External Cast mute was not reflected.");
+    remoteMuted = null;
+    w.eval("updateCast()");
+    check(el("mute").disabled && !el("volume").disabled, "Unknown Cast mute state was not handled.");
+    remoteMuted = false;
+    w.eval("updateCast()");
+    rejectMute = true;
+    el("mute").click();
+    await wait(() => el("status").textContent.includes("Could not change Chromecast mute state"));
+    check(!remoteMuted && !el("mute").disabled && el("mute").getAttribute("aria-label") === "Mute",
+      "A failed Cast mute was not reported or restored.");
+    rejectMute = false;
+    check(el("visualizer").hidden && el("visualizer-status").textContent.includes("while casting"), "The visualizer did not stop for Cast output.");
+    check(!localPaused && !el("stop-browser").hidden, "Connecting a receiver stopped browser playback or hid its stop control.");
+    check(el("play-pause-icon").textContent === "pause", "Playing receiver should show the pause icon.");
+    check(el("player-title").textContent === "Existing", "Receiver track was not displayed for Cast output.");
+    check(!d.querySelector(".track-button[aria-current=true]"), "An unrelated receiver track inherited the local highlight.");
+    check(!el("player-artwork").hasAttribute("src"), "Receiver without artwork displayed local artwork.");
+    media.media.metadata.images = [{url: "https://artwork.example/receiver.png"}];
+    w.eval("updateCast()");
+    check(el("player-artwork").getAttribute("src") === "https://artwork.example/receiver.png", "Receiver artwork was not displayed.");
+    el("player-artwork").dispatchEvent(new w.Event("load"));
+    el("player-background").dispatchEvent(new w.Event("load"));
+    check(el("player-background").getAttribute("src") === "https://artwork.example/receiver.png" && !el("player-background").hidden, "Receiver artwork was not used for the background.");
+    const previousReceiverAccent = paletteRequests[paletteRequests.length - 1];
+    media.media.metadata.images = [{url: "https://artwork.example/next.png"}];
+    w.eval("updateCast()");
+    check(el("player-artwork").getAttribute("src") === "https://artwork.example/next.png", "Receiver artwork did not follow track changes.");
+    check(el("player-background").hidden && !el("player-background").hasAttribute("src"), "Changing receiver tracks left the old background visible.");
+    previousReceiverAccent.onload();
+    check(!d.documentElement.style.getPropertyValue("--accent"), "A previous receiver track changed the accent.");
+    el("player-artwork").dispatchEvent(new w.Event("load"));
+    paletteRequests[paletteRequests.length - 1].onerror();
+    check(!d.documentElement.style.getPropertyValue("--accent") && el("activity").textContent.includes("Could not sample artwork"), "Blocked sampling did not retain and report the default accent.");
+    el("player-artwork").dispatchEvent(new w.Event("load"));
+    const receiverAccent = paletteRequests[paletteRequests.length - 1];
+    receiverAccent.getContext("2d").fillStyle = "#0000ff";
+    receiverAccent.getContext("2d").fillRect(0, 0, 4, 4);
+    receiverAccent.onload();
+    check(d.documentElement.style.getPropertyValue("--accent") === "hsl(240 55% 80%)", "Receiver artwork did not update the accent.");
+    check(el("seek").value === "20" && el("seek-duration").textContent === "3:20", "Receiver time was not displayed.");
+    check(el("volume-value").textContent === "65%", "Receiver volume was not displayed.");
+    media.playerState = "PAUSED";
+    w.eval("updateCast()");
+    check(el("play-pause-icon").textContent === "play_arrow", "Paused receiver should show the play icon.");
+    el("play-pause").click();
+    await wait(() => remoteCommand === "play");
+    el("next").click();
+    await wait(() => remoteCommand === "next");
+    el("previous").click();
+    await wait(() => remoteCommand === "previous");
+    el("stop").click();
+    await wait(() => remoteCommand === "stop");
+    el("seek").value = "50";
+    el("seek").dispatchEvent(new w.Event("input"));
+    w.eval("updateCast()");
+    check(el("seek").value === "50", "Receiver update overwrote an in-progress seek.");
+    el("seek").dispatchEvent(new w.Event("change"));
+    await wait(() => remoteTime === 50);
+    el("volume").value = "0.3";
+    el("volume").dispatchEvent(new w.Event("input"));
+    el("volume").dispatchEvent(new w.Event("change"));
+    await wait(() => remoteVolume === 0.3);
+    await wait(() => !el("volume").disabled);
+    remoteVolume = 0.75;
+    w.eval("updateCast()");
+    check(el("volume-value").textContent === "75%", "External receiver volume was not reflected.");
+    seekSupported = false;
+    w.eval("updateCast()");
+    check(el("seek").disabled, "Unsupported receiver seek should be disabled.");
+    seekSupported = true;
+    w.eval("updateCast()");
+    rejectSeek = true;
+    el("seek").value = "80";
+    el("seek").dispatchEvent(new w.Event("input"));
+    el("seek").dispatchEvent(new w.Event("change"));
+    await wait(() => el("status").textContent.includes("did not confirm the seek"));
+    rejectSeek = false;
+    rejectVolume = true;
+    el("volume").value = "0.2";
+    el("volume").dispatchEvent(new w.Event("input"));
+    el("volume").dispatchEvent(new w.Event("change"));
+    await wait(() => el("status").textContent.includes("Could not change Chromecast volume"));
+    rejectVolume = false;
+    w.currentSession = null;
+    w.eval("updateCast()");
+    check(el("volume-value").textContent === "40%", "Local and Cast volume levels were mixed.");
+    check(el("output-status").textContent === "This browser" && el("player-title").textContent === "One" && !localPaused, "Disconnect changed browser playback.");
+    check(d.querySelectorAll(".track-button")[0].getAttribute("aria-current") === "true", "Disconnect did not restore the local track highlight.");
+    check(el("player-artwork").getAttribute("src") === thumbnailUrl, "Disconnect did not restore local artwork.");
+    w.currentSession = session;
+    w.eval("updateCast()");
+    remoteCommand = "unchanged";
+    el("stop-browser").click();
+    check(localPaused && el("stop-browser").hidden && remoteCommand === "unchanged", "Stop browser affected receiver playback.");
+    el("seek").value = "90";
+    el("seek").dispatchEvent(new w.Event("input"));
+    media.currentItemId = 2;
+    w.eval("updateCast()");
+    el("seek").dispatchEvent(new w.Event("change"));
+    check(remoteTime === 50, "An old seek affected a new receiver track.");
+    w.currentSession = null;
+    w.eval("updateCast()");
+    check(el("seek").disabled && !el("volume").disabled && el("play-pause").disabled, "Disconnected output did not switch to browser controls.");
+    check(localPaused && loads === 0, "Disconnect unexpectedly started local playback.");
+    w.currentSession = session;
+    w.eval("updateCast()");
+    check(loads === 0, "Connecting a receiver unexpectedly loaded a queue.");
+    check(!el("seek").disabled && !el("volume").disabled, "Reconnected receiver controls did not recover.");
+    media.playerState = "PLAYING";
+    w.eval("updateCast()");
+    mode = "normal";
+    el("play-selected").click();
+    await wait(() => el("status").textContent.includes("not changed"));
+    check(loads === 0, "Cast queue was replaced without confirmation.");
+    await wait(() => !el("play-selected").disabled);
+    allowReplace = true;
+    const proxiesBeforeCast = requests.filter(r => r.path.endsWith("/audio-proxy")).length;
+    el("play-selected").click();
+    await wait(() => loads === 1);
+    await wait(() => !el("play-selected").disabled);
+    check(lastLoad.queueData.startIndex === 0, "Default Cast playback did not start at the first track.");
+    check(lastLoad.queueData.items[0].media.url === "https://media.example/signed-secret" &&
+      requests.filter(r => r.path.endsWith("/audio-proxy")).length === proxiesBeforeCast, "Cast playback used the browser audio proxy.");
+    check(d.querySelectorAll(".track-button")[0].getAttribute("aria-current") === "true", "The current Cast queue track was not highlighted.");
+    check(lastLoad.queueData.items[0].media.metadata.images[0].url === thumbnailUrl &&
+      lastLoad.queueData.items[1].media.metadata.images[0].url === thirdThumbnailUrl, "Queue artwork was not matched to Cast queue items.");
+    media.currentItemId = 102;
+    w.eval("updateCast()");
+    check(d.querySelectorAll(".track-button")[2].getAttribute("aria-current") === "true", "A Cast track change did not update the highlight.");
+    media.media = lastLoad.queueData.items[1].media;
+    media.items = null;
+    w.eval("updateCast()");
+    check(d.querySelectorAll(".track-button")[2].getAttribute("aria-current") === "true", "Cast media without a queue item list lost the highlight.");
+    media.playerState = "IDLE";
+    w.eval("updateCast()");
+    check(!d.querySelector(".track-button[aria-current=true]"), "An idle receiver retained the highlight.");
+    media.playerState = "PLAYING";
+    w.eval("updateCast()");
+    d.querySelector(".playlist-button").click();
+    check(d.querySelectorAll(".track-button")[2].getAttribute("aria-current") === "true", "The Cast duplicate was not highlighted in the playlist.");
+    d.querySelectorAll(".track-button")[2].click();
+    await wait(() => loads === 2);
+    await wait(() => !el("play-selected").disabled);
+    check(lastLoad.queueData.startIndex === 1, "Cast start index did not account for a skipped track.");
+    check(lastLoad.media === lastLoad.queueData.items[1].media, "Cast load media did not match the selected track.");
+    d.querySelector(".playlist-button").click();
+    d.querySelectorAll(".track-button")[1].click();
+    await wait(() => loads === 3);
+    await wait(() => !el("play-selected").disabled);
+    check(lastLoad.queueData.startIndex === 1, "Failed selected Cast track did not skip forward.");
+    d.querySelector(".playlist-button").click();
+    el("open-settings").click();
+    el("auto-shuffle").checked = true;
+    el("auto-shuffle").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    d.querySelectorAll(".track-button")[2].click();
+    await wait(() => loads === 4);
+    await wait(() => !el("play-selected").disabled);
+    check(lastLoad.queueData.startIndex === 1, "Shuffled Cast duplicate started at the wrong position.");
+    mode = "tail-bad";
+    d.querySelector(".playlist-button").click();
+    d.querySelectorAll(".track-button")[1].click();
+    await wait(() => el("status").textContent.includes("at or after the selected position"));
+    await wait(() => !el("play-selected").disabled);
+    check(loads === 4, "Cast played an earlier track when no later track resolved.");
+
+    mode = "delay";
+    resolveEntered = false;
+    cancelled = false;
+    el("play-selected").click();
+    await wait(() => resolveEntered);
+    w.currentSession = null;
+    w.eval("updateCast()");
+    await wait(() => cancelled);
+    check(el("status").textContent.includes("preparation cancelled") && loads === 4, "Disconnect did not cancel Cast preparation.");
+
+    resolveEntered = false;
+    cancelled = false;
+    el("play-selected").click();
+    await wait(() => resolveEntered);
+    w.currentSession = session;
+    w.eval("updateCast()");
+    await wait(() => cancelled);
+    check(el("status").textContent.includes("preparation cancelled") && loads === 4, "Connecting Cast did not cancel browser preparation.");
+
+    w.currentSession = null;
+    w.eval("updateCast()");
+    mode = "normal";
+    el("play-selected").click();
+    await wait(() => el("queue-status").textContent.includes("(2 of 3)"));
+    await wait(() => !el("play-selected").disabled);
+    check(!localPaused, "Browser playback did not resume after disconnect.");
+    w.currentSession = session;
+    w.eval("updateCast()");
+    mode = "load-delay";
+    el("play-selected").click();
+    await wait(() => typeof finishLoad === "function");
+    w.currentSession = null;
+    w.eval("updateCast()");
+    w.currentSession = session;
+    w.eval("updateCast()");
+    finishLoad();
+    await wait(() => !el("play-selected").disabled);
+    check(!localPaused && el("status").textContent.includes("session changed during loading"), "Changed Cast session stopped browser playback or reported an uncertain load as successful.");
+    check(requests.every(r => r.redirect === "error" && r.credentials === "omit"), "Unsafe request options.");
+
+    w.currentSession = null;
+    w.eval("updateCast()");
+    el("stop").click();
+    check(!d.querySelector(".track-button[aria-current=true]"), "Stopping playback retained the current track highlight.");
+    mode = "invalid-proxy";
+    el("play-selected").click();
+    await wait(() => !el("play-selected").disabled);
+    check(audio.src === "https://media.example/signed-secret" && !localPaused &&
+      el("activity").textContent.includes("invalid audio proxy URL"), "An untrusted proxy URL was not rejected with direct playback fallback.");
+    mode = "proxy-delay";
+    w.setTimeout = (callback, delay, ...args) => originalSetTimeout(callback, delay === 5000 ? 0 : delay, ...args);
+    el("play-selected").click();
+    await wait(() => !el("play-selected").disabled);
+    w.setTimeout = originalSetTimeout;
+    check(audio.src === "https://media.example/signed-secret" && !localPaused &&
+      el("activity").textContent.includes("Request timed out"), "Proxy timeout did not fall back to direct playback.");
+    mode = "normal";
+    el("stop").click();
+    el("open-settings").click();
+    el("visualizer-mode").value = "off";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    const proxyCount = requests.filter(r => r.path.endsWith("/audio-proxy")).length;
+    el("play-selected").click();
+    await wait(() => !el("play-selected").disabled);
+    check(requests.filter(r => r.path.endsWith("/audio-proxy")).length === proxyCount && !audio.hasAttribute("crossorigin") && !localPaused, "Off mode requested a proxy or altered browser playback.");
+    el("open-settings").click();
+    el("visualizer-mode").value = "wave";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    check(el("visualizer-status").textContent.includes("next compatible track") && !localPaused, "Enabling analysis changed the current track.");
+    el("stop").click();
+    el("open-settings").click();
+    el("signout").click();
+    check(!el("login-panel").hidden, "Sign-out did not return to login.");
+    check(el("settings-panel").hidden, "Sign-out left settings open.");
+    check(localStorage.getItem(serverUrlKey) === "http://server.example:8000", "Sign-out removed the saved server URL.");
+    check(localStorage.getItem(usernameKey) === "alice", "Sign-out removed the saved username.");
+    check(localStorage.getItem(autoShuffleKey) === "true", "Sign-out removed the auto shuffle setting.");
+    check(localStorage.getItem(visualizerKey) === "wave", "Sign-out removed the visualizer setting.");
+    w.Storage.prototype.setItem = function(key, value) {
+      if (key === usernameKey) throw new w.DOMException("Storage blocked", "QuotaExceededError");
+      return originalSetItem.call(this, key, value);
+    };
+    el("username").value = "bob";
+    el("password").value = "secret";
+    el("login-form").requestSubmit();
+    await wait(() => !el("library").hidden);
+    check(el("status").textContent.includes("username could not be saved") &&
+      localStorage.getItem(usernameKey) === "alice" && localStorage.getItem(serverUrlKey) === "http://server.example:8000",
+      "A username storage failure was not reported independently.");
+    el("signout").click();
+    w.Storage.prototype.setItem = originalSetItem;
+    el("username").value = "alice";
+    w.Storage.prototype.setItem = () => { throw new w.DOMException("Storage blocked", "SecurityError"); };
+    el("open-settings").click();
+    el("auto-shuffle").checked = false;
+    el("auto-shuffle").dispatchEvent(new w.Event("change"));
+    check(el("status").textContent.includes("auto shuffle changed for this page but was not saved"), "Auto shuffle storage failure was not reported.");
+    check(localStorage.getItem(autoShuffleKey) === "true", "Failed save changed the stored setting.");
+    el("visualizer-mode").value = "off";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    check(el("status").textContent.includes("visualizer changed for this page but was not saved"), "Visualizer storage failure was not reported.");
+    el("close-settings").click();
+    el("password").value = "secret";
+    el("login-form").requestSubmit();
+    await wait(() => !el("library").hidden);
+    check(el("status").textContent.includes("server URL and username could not be saved"), "Storage failure was not reported.");
+    el("open-settings").click();
+    el("visualizer-mode").value = "bars";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    el("close-settings").click();
+    mode = "proxy-auth";
+    d.querySelector(".playlist-button").click();
+    el("play-selected").click();
+    await wait(() => !el("login-panel").hidden);
+    check(el("status").textContent.includes("Authentication failed") && localPaused, "Proxy authentication failure did not sign out.");
+    w.Storage.prototype.setItem = originalSetItem;
+    mode = "normal";
+    el("password").value = "secret";
+    el("login-form").requestSubmit();
+    await wait(() => !el("library").hidden);
+    check(!el("refresh") && el("new-playlist").textContent.includes("New"), "New did not replace Refresh.");
+    d.querySelector(".playlist-button").click();
+    el("play-selected").click();
+    await wait(() => el("queue-status").textContent.includes("(1 of 3)"));
+    await wait(() => !el("play-selected").disabled);
+    const playingSource = audio.src;
+    const createRequests = () => requests.filter(r => r.path.endsWith("/playlists") && r.method === "POST");
+    const queueRequests = requests.filter(r => r.path.endsWith("/queue")).length;
+    el("new-playlist").click();
+    check(el("playlist-dialog").open, "New playlist dialog did not open.");
+    el("playlist-name").value = "   ";
+    el("playlist-form").requestSubmit();
+    check(!el("playlist-error").hidden && createRequests().length === 0, "A blank playlist name was accepted.");
+    el("playlist-cancel").click();
+    check(!el("playlist-dialog").open && createRequests().length === 0, "Cancel created a playlist.");
+    mode = "playlist-delay";
+    el("new-playlist").click();
+    el("playlist-name").value = "  My mix  ";
+    el("playlist-form").requestSubmit();
+    await wait(() => typeof finishCreate === "function");
+    const escape = new w.Event("cancel", {cancelable: true});
+    el("playlist-dialog").dispatchEvent(escape);
+    check(el("playlist-save").disabled && el("playlist-cancel").disabled && escape.defaultPrevented, "Pending creation allowed cancellation or a duplicate submission.");
+    finishCreate();
+    await wait(() => !el("playlist-dialog").open);
+    check(createRequests().length === 1 && JSON.parse(createRequests()[0].body).name === "My mix", "The playlist was not created with its trimmed name.");
+    check(d.querySelectorAll(".playlist-button")[3].textContent === "My mix" && el("playlist-title").textContent === "My mix - (0 songs)" &&
+      el("play-selected").disabled && !localPaused && audio.src === playingSource &&
+      requests.filter(r => r.path.endsWith("/queue")).length === queueRequests,
+      "The created empty playlist was not selected without changing playback.");
+    mode = "playlist-invalid";
+    el("new-playlist").click();
+    el("playlist-name").value = "Rejected";
+    el("playlist-form").requestSubmit();
+    await wait(() => !el("playlist-error").hidden);
+    check(el("playlist-dialog").open && el("playlist-error").textContent.includes("rejected"), "A creation error was not shown in the dialog.");
+    el("playlist-cancel").click();
+    mode = "playlist-uncertain";
+    el("new-playlist").click();
+    el("playlist-name").value = "Uncertain";
+    el("playlist-form").requestSubmit();
+    await wait(() => el("status").textContent.includes("outcome is uncertain"));
+    check(!el("playlist-dialog").open && createRequests().length === 3 && !el("new-playlist").disabled,
+      "An uncertain creation was retried or not reported.");
+    mode = "normal";
+    d.querySelector(".playlist-button").click();
+    el("edit-playlist").click();
+    check(el("playlist-dialog").open && el("playlist-name").value === "Mix" && !el("playlist-delete").hidden, "Edit did not open the selected playlist.");
+    el("playlist-name").value = "  Renamed mix  ";
+    el("playlist-form").requestSubmit();
+    await wait(() => !el("playlist-dialog").open);
+    check(d.querySelector(".playlist-button").textContent === "Renamed mix" && el("playlist-title").textContent === "Renamed mix - (3 songs)" &&
+      d.querySelectorAll("#tracks li").length === 3 && !localPaused && audio.src === playingSource &&
+      requests.filter(r => r.path.endsWith("/queue")).length === queueRequests, "Rename changed tracks or playback.");
+    check(requests.some(r => r.path.endsWith("/playlists/p") && r.method === "PATCH" &&
+      JSON.parse(r.body).name === "Renamed mix"), "Rename request was not sent correctly.");
+    el("edit-playlist").click();
+    allowReplace = false;
+    el("playlist-delete").click();
+    check(el("playlist-dialog").open && !requests.some(r => r.path.endsWith("/playlists/p") && r.method === "DELETE"),
+      "Cancelling deletion removed a playlist.");
+    allowReplace = true;
+    el("playlist-delete").click();
+    await wait(() => !el("playlist-dialog").open);
+    check(!d.querySelector(".playlist-button").textContent.includes("Renamed mix") && el("edit-playlist").disabled &&
+      el("playlist-title").textContent === "No playlist selected" && !localPaused && audio.src === playingSource,
+      "Deleting a playlist did not update selection or changed playback.");
+    d.querySelector(".playlist-button").click();
+    mode = "playlist-uncertain";
+    el("edit-playlist").click();
+    el("playlist-name").value = "Recovered";
+    el("playlist-form").requestSubmit();
+    await wait(() => el("status").textContent.includes("rename outcome is uncertain"));
+    check(d.querySelector(".playlist-button").textContent === "Recovered" && el("playlist-title").textContent === "Recovered - (0 songs)",
+      "An uncertain rename was not reconciled.");
+    mode = "playlist-invalid";
+    el("edit-playlist").click();
+    el("playlist-name").value = "Rejected rename";
+    el("playlist-form").requestSubmit();
+    await wait(() => !el("playlist-error").hidden);
+    check(el("playlist-dialog").open && d.querySelector(".playlist-button").textContent === "Recovered",
+      "A failed rename did not preserve the playlist.");
+    el("playlist-delete").click();
+    await wait(() => !el("playlist-error").hidden);
+    check(el("playlist-dialog").open && d.querySelector(".playlist-button").textContent === "Recovered",
+      "A failed deletion did not preserve the playlist.");
+    mode = "playlist-uncertain";
+    el("playlist-delete").click();
+    await wait(() => el("status").textContent.includes("deletion outcome is uncertain"));
+    check(el("edit-playlist").disabled && el("playlist-title").textContent === "No playlist selected" &&
+      !localPaused && audio.src === playingSource, "An uncertain deletion was not reconciled safely.");
+    check(el("add-song").disabled, "Adding a song was enabled without a selected playlist.");
+    d.querySelector(".playlist-button").click();
+    mode = "song-invalid";
+    el("add-song").click();
+    check(el("song-dialog").open, "Add song dialog did not open.");
+    el("song-url").value = "https://evil.example/12345678901";
+    el("song-form").requestSubmit();
+    await wait(() => !el("song-error").hidden);
+    check(el("song-error").textContent.includes("valid HTTPS YouTube"), "Invalid URL was not reported.");
+    mode = "song-title-failed";
+    el("song-url").value = "https://youtu.be/12345678901";
+    el("song-form").requestSubmit();
+    await wait(() => !el("song-error").hidden);
+    check(el("song-error").textContent.includes("title"), "Title lookup failure was not reported.");
+    mode = "song-full";
+    el("song-form").requestSubmit();
+    await wait(() => !el("song-error").hidden);
+    check(el("song-error").textContent.includes("5,000"), "The playlist limit was not reported.");
+    mode = "song-delay";
+    el("song-form").requestSubmit();
+    await wait(() => typeof finishAddSong === "function");
+    const songEscape = new w.Event("cancel", {cancelable: true});
+    el("song-dialog").dispatchEvent(songEscape);
+    check(el("song-save").disabled && el("song-cancel").disabled && songEscape.defaultPrevented,
+      "A pending add allowed cancellation or a duplicate submission.");
+    finishAddSong();
+    await wait(() => !el("song-dialog").open);
+    check(d.querySelectorAll("#tracks li").length === 2 && d.querySelector("#tracks").textContent.includes("Fetched title") &&
+      el("playlist-title").textContent === "Other - (2 songs)" &&
+      el("status").textContent === "" &&
+      !localPaused && audio.src === playingSource && requests.filter(r => r.path.endsWith("/queue")).length === queueRequests,
+      "Adding a song did not update the playlist silently or changed playback.");
+    const songRequests = () => requests.filter(r => r.path.endsWith("/playlists/other/tracks"));
+    check(songRequests().length === 4 && JSON.parse(songRequests()[3].body).url === "https://youtu.be/12345678901",
+      "The add-song request was not sent correctly.");
+    mode = "song-uncertain";
+    el("add-song").click();
+    el("song-url").value = "https://youtu.be/12345678901";
+    el("song-form").requestSubmit();
+    await wait(() => el("status").textContent.includes("may still complete"));
+    check(!el("song-dialog").open && d.querySelectorAll("#tracks li").length === 3 && songRequests().length === 5,
+      "An uncertain add was retried or not reconciled.");
+    mode = "song-malformed";
+    el("add-song").click();
+    el("song-url").value = "https://youtu.be/12345678901";
+    el("song-form").requestSubmit();
+    await wait(() => !el("song-dialog").open);
+    check(el("status").textContent.includes("may still complete") &&
+      d.querySelectorAll("#tracks li").length === 4 && songRequests().length === 6,
+      "A malformed response was not reconciled safely.");
+    const removeRequests = () => requests.filter(r => r.path.endsWith("/playlists/other/tracks") && r.method === "DELETE");
+    check(d.querySelectorAll(".edit-song").length === 4, "Saved tracks did not have edit buttons.");
+    allowReplace = false;
+    d.querySelectorAll(".edit-song")[2].click();
+    check(el("edit-song-dialog").open && el("edit-song-url").value === "https://youtu.be/12345678901",
+      "Edit did not open with the selected song URL.");
+    el("edit-song-delete").click();
+    check(el("edit-song-dialog").open && removeRequests().length === 0, "Cancelled song deletion sent a request.");
+    el("edit-song-cancel").click();
+    allowReplace = true;
+    mode = "remove-delay";
+    searchTracks("fetched");
+    check(visibleTracks().length === 3, "Search did not filter added songs.");
+    visibleTracks()[1].querySelector(".edit-song").click();
+    el("edit-song-delete").click();
+    await wait(() => typeof finishRemoveSong === "function");
+    check([...d.querySelectorAll(".edit-song")].every(button => button.disabled) &&
+      el("edit-song-save").disabled && el("edit-song-delete").disabled && el("edit-song-cancel").disabled,
+      "Pending deletion did not disable removal buttons.");
+    finishRemoveSong();
+    await wait(() => el("status").textContent.includes("Song removed."));
+    check(d.querySelectorAll("#tracks li").length === 3 && removeRequests().length === 1 &&
+      el("playlist-title").textContent === "Other - (3 songs)" &&
+      JSON.parse(removeRequests()[0].body).index === 2 && !localPaused && audio.src === playingSource &&
+      requests.filter(r => r.path.endsWith("/queue")).length === queueRequests,
+      "Removing a duplicate changed playback or removed the wrong entry.");
+    check(visibleTracks().length === 2, "Search was not preserved after removing a song.");
+    searchTracks("");
+    initialPlaylists[0] = {...initialPlaylists[0], videos: [
+      ...initialPlaylists[0].videos, {name: "Concurrent", link: "https://youtu.be/abcdefghijk"}
+    ]};
+    mode = "normal";
+    d.querySelectorAll(".edit-song")[0].click();
+    el("edit-song-delete").click();
+    await wait(() => el("status").textContent.includes("playlist changed"));
+    check(d.querySelectorAll("#tracks li").length === 4 && d.querySelector("#tracks").textContent.includes("Concurrent"),
+      "Stale removal did not refresh the changed playlist.");
+    mode = "remove-uncertain";
+    d.querySelectorAll(".edit-song")[0].click();
+    el("edit-song-delete").click();
+    await wait(() => el("status").textContent.includes("Removing the song may still complete"));
+    check(d.querySelectorAll("#tracks li").length === 3 && removeRequests().length === 3,
+      "Uncertain removal was retried or not reconciled.");
+    const replaceRequests = () => requests.filter(r => r.path.endsWith("/playlists/other/tracks") && r.method === "PATCH");
+    searchTracks("fetched");
+    visibleTracks()[1].querySelector(".edit-song").click();
+    check(el("edit-song-name").textContent === "Fetched title", "Edit dialog did not identify the selected song.");
+    mode = "song-invalid";
+    el("edit-song-url").value = "https://evil.example/12345678901";
+    el("edit-song-form").requestSubmit();
+    await wait(() => !el("edit-song-error").hidden);
+    check(el("edit-song-error").textContent.includes("valid HTTPS YouTube"), "Invalid replacement URL was not reported.");
+    mode = "song-title-failed";
+    el("edit-song-url").value = "https://youtu.be/zyxwvutsrqp";
+    el("edit-song-form").requestSubmit();
+    await wait(() => !el("edit-song-error").hidden);
+    check(el("edit-song-error").textContent.includes("title"), "Replacement title failure was not reported.");
+    mode = "replace-delay";
+    el("edit-song-form").requestSubmit();
+    await wait(() => typeof finishReplaceSong === "function");
+    const editEscape = new w.Event("cancel", {cancelable: true});
+    el("edit-song-dialog").dispatchEvent(editEscape);
+    check(el("edit-song-save").disabled && el("edit-song-delete").disabled && el("edit-song-cancel").disabled &&
+      editEscape.defaultPrevented, "Pending replacement allowed cancellation or a duplicate request.");
+    finishReplaceSong();
+    await wait(() => !el("edit-song-dialog").open);
+    check(el("status").textContent.includes("Song updated") && visibleTracks().length === 1 &&
+      d.querySelectorAll(".track-button")[1].textContent === "Replacement title" &&
+      JSON.parse(replaceRequests()[2].body).index === 1 &&
+      !localPaused && audio.src === playingSource && requests.filter(r => r.path.endsWith("/queue")).length === queueRequests,
+      "Replacing a filtered duplicate changed playback or the wrong song.");
+    searchTracks("");
+    d.querySelectorAll(".edit-song")[0].click();
+    initialPlaylists[0] = {...initialPlaylists[0], videos: [...initialPlaylists[0].videos,
+      {name: "Another", link: "https://youtu.be/abcdefghijk"}]};
+    mode = "normal";
+    el("edit-song-url").value = "https://youtu.be/zyxwvutsrqp";
+    el("edit-song-form").requestSubmit();
+    await wait(() => el("status").textContent.includes("playlist changed"));
+    check(!el("edit-song-dialog").open && d.querySelectorAll("#tracks li").length === 4,
+      "A stale replacement did not refresh the playlist.");
+    d.querySelectorAll(".edit-song")[0].click();
+    mode = "replace-uncertain";
+    el("edit-song-url").value = "https://youtu.be/zyxwvutsrqp";
+    el("edit-song-form").requestSubmit();
+    await wait(() => el("status").textContent.includes("Updating the song may still complete"));
+    check(!el("edit-song-dialog").open && d.querySelectorAll(".track-button")[0].textContent === "Replacement title" &&
+      replaceRequests().length === 5, "An uncertain replacement was retried or not reconciled.");
+    d.querySelectorAll(".edit-song")[0].click();
+    mode = "replace-malformed";
+    el("edit-song-url").value = "https://youtu.be/12345678901";
+    el("edit-song-form").requestSubmit();
+    await wait(() => !el("edit-song-dialog").open);
+    check(el("status").textContent.includes("Updating the song may still complete") && replaceRequests().length === 6,
+      "A malformed replacement response was not reconciled.");
+    d.querySelectorAll(".edit-song")[0].click();
+    mode = "replace-delay";
+    finishReplaceSong = null;
+    el("edit-song-url").value = "https://youtu.be/zyxwvutsrqp";
+    el("edit-song-form").requestSubmit();
+    await wait(() => typeof finishReplaceSong === "function");
+    el("signout").click();
+    check(!el("edit-song-dialog").open && el("status").textContent.includes("playlist change may have completed"),
+      "Signing out during replacement did not close the dialog and warn of an uncertain outcome.");
+    finishReplaceSong();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    check(!el("login-panel").hidden && el("status").textContent.includes("playlist change may have completed"),
+      "A late replacement response changed the signed-out state.");
+    result.textContent = "PASS: playlist and song management, settings, visualizer, login, queues, retry/skip, cancellation, and Cast confirmation.";
+  } catch (error) {
+    result.textContent = "FAIL: " + error.message;
+  } finally {
+    w.Image = originalImage;
+    w.Storage.prototype.setItem = originalSetItem;
+    w.setTimeout = originalSetTimeout;
+    if (previousServerUrl === null) localStorage.removeItem(serverUrlKey);
+    else localStorage.setItem(serverUrlKey, previousServerUrl);
+    if (previousUsername === null) localStorage.removeItem(usernameKey);
+    else localStorage.setItem(usernameKey, previousUsername);
+    if (previousAutoShuffle === null) localStorage.removeItem(autoShuffleKey);
+    else localStorage.setItem(autoShuffleKey, previousAutoShuffle);
+    if (previousVisualizer === null) localStorage.removeItem(visualizerKey);
+    else localStorage.setItem(visualizerKey, previousVisualizer);
+  }
+});
+</script>
+</body>
+</html>
