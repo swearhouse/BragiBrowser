@@ -17,6 +17,13 @@ const state = {
 const visualizer = { context: null, source: null, analyser: null, sink: null, stream: null, frame: 0, failure: "" };
 
 function message(text) { $("status").textContent = text; }
+function getCastMediaSession(session) {
+  if (!session) return null;
+  const media = session.getMediaSession();
+  if (media) return media;
+  const sessions = session.getSessionObj().media.filter(item => item.playerState !== "IDLE");
+  return sessions.length === 1 ? sessions[0] : null;
+}
 function log(text) {
   const item = document.createElement("li");
   item.textContent = text;
@@ -466,7 +473,7 @@ function showTracks(playlist, isQueue = false) {
 function updateTrackHighlight() {
   const displayed = state.displayedPlaylist;
   const session = state.castContext && state.castContext.getCurrentSession();
-  const media = session && session.getMediaSession();
+  const media = getCastMediaSession(session);
   let queue = null, index = -1;
   if (session && media && media.playerState !== "IDLE") {
     const item = Array.isArray(media.items) && media.items.find(entry => entry.itemId === media.currentItemId);
@@ -922,7 +929,7 @@ function waitForCastMediaSession(session, sessionVersion, generation, signal, qu
         fail(new ApiError("The Cast session changed during loading; check the receiver before retrying."));
         return;
       }
-      const media = session.getMediaSession();
+      const media = getCastMediaSession(session);
       const currentItem = media && media.media && media.media.customData && media.media.customData.bragiBrowser;
       if (media && media.currentItemId != null && currentItem &&
           currentItem.queueId === queueId && currentItem.index === itemIndex) {
@@ -1002,7 +1009,8 @@ async function startPlayback(playlistId = null, selection = null) {
       await nextLocal(generation, controller.signal);
     } else {
       if (state.castContext.getCurrentSession() !== session) throw new ApiError("The Cast session changed. Reconnect and try again.");
-      if (session.getMediaSession() && !window.confirm("The receiver already has media. Replace its current queue?")) {
+      if ((session.getMediaSession() || session.getSessionObj().media.some(media => media.playerState !== "IDLE")) &&
+          !window.confirm("The receiver already has media. Replace its current queue?")) {
         message("Receiver queue was not changed.");
         return;
       }
@@ -1055,7 +1063,7 @@ async function startPlayback(playlistId = null, selection = null) {
       const firstId = media.currentItemId;
       const checkSession = () => {
         if (state.castContext.getCurrentSession() !== session || state.castSessionVersion !== castSessionVersion ||
-            session.getMediaSession() !== media) {
+            getCastMediaSession(session) !== media) {
           throw new ApiError("The Cast session changed while sending the queue. Check the receiver before retrying.");
         }
       };
@@ -1232,7 +1240,7 @@ function updateCast() {
       session.addEventListener(cast.framework.SessionEventType.VOLUME_CHANGED, updateCast);
     }
   }
-  const media = session && session.getMediaSession();
+  const media = getCastMediaSession(session);
   if (media !== state.castMedia) {
     if (state.castMedia) state.castMedia.removeUpdateListener(updateCast);
     state.castMedia = media;
@@ -1254,7 +1262,7 @@ window.__onGCastApiAvailable = function(available) {
 window.castSdkLoadFailed = function() { $("cast-status").textContent = "Cast SDK could not be downloaded."; };
 async function castCommand(command) {
   const session = state.castContext && state.castContext.getCurrentSession();
-  const media = session && session.getMediaSession();
+  const media = getCastMediaSession(session);
   if (!media) { updateCast(); return; }
   try {
     await new Promise((resolve, reject) => {
@@ -1389,7 +1397,7 @@ function updatePlayer() {
   const audio = $("audio");
   const session = state.castContext && state.castContext.getCurrentSession();
   const casting = !!session;
-  const media = session && session.getMediaSession();
+  const media = getCastMediaSession(session);
   const hasLocal = !!audio.getAttribute("src") && state.localQueue.length > 0;
   const device = casting && session.getCastDevice();
   $("output-status").textContent = casting ? (device && device.friendlyName || "Chromecast") : "This browser";
@@ -1440,7 +1448,7 @@ function updatePlayer() {
 ["play", "pause", "ended", "emptied", "loadedmetadata", "durationchange", "timeupdate", "volumechange"].forEach(event => {
   $("audio").addEventListener(event, updatePlayer);
 });
-setInterval(updatePlayer, 1000);
+setInterval(updateCast, 1000);
 document.addEventListener("visibilitychange", syncVisualizer);
 
 $("play-pause").addEventListener("click", async () => {
@@ -1470,7 +1478,7 @@ $("previous").addEventListener("click", () => {
 $("seek").addEventListener("input", () => {
   const session = state.castContext && state.castContext.getCurrentSession();
   const casting = !!session;
-  const media = session && session.getMediaSession();
+  const media = getCastMediaSession(session);
   state.seeking = { casting, target: casting ? media : $("audio").getAttribute("src"), track: casting ? media && media.currentItemId : state.localIndex };
   $("seek-current").textContent = formatTime(Number($("seek").value));
 });
@@ -1481,7 +1489,7 @@ $("seek").addEventListener("change", async () => {
   const time = Number($("seek").value);
   if (selection.casting) {
     const session = state.castContext && state.castContext.getCurrentSession();
-    const media = session && session.getMediaSession();
+    const media = getCastMediaSession(session);
     if (!media || media !== selection.target || media.currentItemId !== selection.track) return updatePlayer();
     const request = new chrome.cast.media.SeekRequest();
     request.currentTime = time;

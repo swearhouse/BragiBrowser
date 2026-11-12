@@ -704,6 +704,8 @@ frame.addEventListener("load", async () => {
     const insertSizes = [];
     const insertCounts = [];
     const mediaSessionListeners = new Set();
+    let frameworkMediaAvailable = true;
+    let otherMediaSessions = [];
     const media = {
       playerState: "PLAYING", currentItemId: 1, media: {duration: 200, metadata: {title: "Existing"}},
       addUpdateListener() {}, removeUpdateListener() {},
@@ -729,7 +731,9 @@ frame.addEventListener("load", async () => {
     };
     let nextItemId = 102;
     const session = {
-      getMediaSession: () => media, getCastDevice: () => ({friendlyName: "Test"}),
+      getMediaSession: () => frameworkMediaAvailable ? media : null,
+      getSessionObj: () => ({media: [...otherMediaSessions, media]}),
+      getCastDevice: () => ({friendlyName: "Test"}),
       getVolume: () => remoteVolume,
       setVolume: async value => { if (rejectVolume) throw new Error("failed"); remoteVolume = value; },
       isMute: () => remoteMuted,
@@ -919,6 +923,44 @@ frame.addEventListener("load", async () => {
       requests.filter(r => r.path.endsWith("/audio-proxy")).length === proxiesBeforeCast &&
       requests.filter(r => r.path.endsWith("/resolve")).length === resolvesBeforeCast &&
       media.items.length === 3, "Cast playback resolved songs before sending the queue.");
+    frameworkMediaAvailable = false;
+    otherMediaSessions = [{playerState: "IDLE"}];
+    media.currentItemId = media.items[1].itemId;
+    media.media = media.items[1].media;
+    media.media.duration = 200;
+    w.eval("updateCast()");
+    check(el("player-title").textContent === videos[1].name && !el("play-pause").disabled &&
+      !el("next").disabled && d.querySelectorAll(".track-button")[1].getAttribute("aria-current") === "true",
+      "A playing media session was lost after the framework stopped reporting it.");
+    remoteCommand = "";
+    el("play-pause").click();
+    await wait(() => remoteCommand === "pause");
+    remoteCommand = "";
+    el("next").click();
+    await wait(() => remoteCommand === "next");
+    el("seek").value = "35";
+    el("seek").dispatchEvent(new w.Event("input"));
+    el("seek").dispatchEvent(new w.Event("change"));
+    await wait(() => remoteTime === 35);
+    allowReplace = false;
+    el("play-selected").click();
+    await wait(() => el("status").textContent.includes("not changed"));
+    check(loads === 1, "An active fallback media session was replaced without confirmation.");
+    await wait(() => !el("play-selected").disabled);
+    otherMediaSessions.push({playerState: "PLAYING"});
+    w.eval("updateCast()");
+    check(el("play-pause").disabled, "An ambiguous fallback media session was selected.");
+    el("play-selected").click();
+    await wait(() => el("status").textContent.includes("not changed"));
+    check(loads === 1, "Ambiguous receiver media was replaced without confirmation.");
+    await wait(() => !el("play-selected").disabled);
+    media.playerState = "IDLE";
+    otherMediaSessions = [];
+    w.eval("updateCast()");
+    check(el("play-pause").disabled, "An idle fallback media session remained controllable.");
+    media.playerState = "PLAYING";
+    frameworkMediaAvailable = true;
+    allowReplace = true;
     currentQueue = {...queue, id: "delayed-status"};
     mode = "load-status-delay";
     finishMediaUpdate = null;
