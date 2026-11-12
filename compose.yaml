@@ -1,0 +1,7 @@
+services:
+  bragi-browser:
+    build: .
+    image: bragi-browser:local
+    ports:
+      - "8765:80"
+    restart: unless-stopped

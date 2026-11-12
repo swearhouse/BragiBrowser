@@ -28,6 +28,28 @@ Chromecast using Google's Cast Web Sender SDK.
    Browsers may block requests from an HTTPS client page to an HTTP server as
    mixed content; use `http://localhost:8765` for local testing.
 
+### Docker
+
+Copy this folder to the Docker host, then build and run the static client:
+
+```sh
+docker compose up -d --build
+```
+
+On CasaOS, run this command from the project folder on the CasaOS machine.
+Open `http://<host-ip>:8765` from your browser. The container serves only the
+client; it does not include BragiServer. Enter a server URL reachable from the
+browser, not a Docker-internal hostname unless the browser can resolve it. If
+the origins differ, allow the exact client origin in BragiServer's Settings.
+
+The Compose port binding is reachable on the host's network interfaces; use it
+only on a trusted network. To restrict it to the Docker host, change the
+binding in `compose.yaml` to `127.0.0.1:8765:80` and open
+`http://localhost:8765` on that host. For production, put the client behind a
+trusted HTTPS reverse proxy and use HTTPS for BragiServer as well. Cast
+requires a supported browser and a secure context; plain HTTP on a LAN address
+may not work.
+
 Click the Bragi logo or name to hide or show the playlist sidebar.
 Select a playlist in the sidebar to inspect its tracks, then press **Play
 playlist** in the sidebar, or select a track to start there and continue
