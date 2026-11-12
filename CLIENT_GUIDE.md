@@ -275,10 +275,30 @@ audio and configure the exact browser origin in the server's allowed origins.
 Tokens support repeated range requests for up to six hours, but are invalidated
 by server restart or any change to `users.json`; the source may expire sooner.
 The proxy forwards range requests and upstream 200, 206, and 416 responses.
-Keep sending the direct resolved URL to Chromecast.
 
 Invalid proxy input returns 400, invalid or expired stream tokens return 401,
 upstream failures return 502, and exhausted token capacity returns 503.
+
+### On-demand Cast playback
+
+`POST /api/v1/cast-queue` with Basic authentication and
+`{"queue_id": "<current queue id>"}` returns
+`{"token": "<bearer token>", "expires_in": 604800, "batch_size": 16}`.
+The batch size is configured in BragiServer's admin Settings (1–5000, default
+16) and applies to the prepared queue. Clients must split large messages
+further to fit Cast message limits. For each zero-based
+index, give the receiver `/api/v1/cast-stream/<index>?token=<token>` on the
+configured server as an `audio/mp4` URL. Each request resolves the stored
+YouTube link and redirects to a temporary Googlevideo MP4 stream; audio flows
+directly from Googlevideo to the receiver. The receiver needs access to both.
+
+The token grants access to the snapshot for seven days, survives replacing the
+shared queue, and is invalidated on restart or any change to `users.json`.
+Do not log or share it; omit query strings from Cast-stream access logs. The
+creation endpoint returns 409 if the current queue changed, or 503 at capacity.
+Stream requests return 401 for invalid tokens, 404 for an invalid index, 422
+if resolution fails, or 502 for an unsupported destination. Receiver handling
+of redirects, seeking, failures and sender closure needs real-device testing.
 
 ### Common failures
 
@@ -305,16 +325,11 @@ or signed audio URLs in error messages, diagnostics, or analytics.
 2. Let the user select a playlist and shuffle preference. Create the queue
    via `POST /api/v1/queue`, preserving the returned order and duplicate
    entries. Do not reshuffle locally or modify the saved playlist.
-3. Resolve each desired queued track via `/api/v1/resolve`. The existing
-   manual harness resolves all items before sending a Cast queue. If a
-   resolution fails, inform the user; whether to retry, stop, or skip is a
-   product decision that has not been made.
-4. Connect to a receiver using the chosen platform's Cast sender SDK. For
-   each resolved item, create media metadata with the returned media URL,
-   MIME type and title, and load the ordered queue. Use the receiver's media
-   events for connected playback status and controls. Follow the platform's
-   Cast SDK requirements; the test harness is a web-specific example, not
-   a reusable production client.
+3. For local playback, resolve tracks using `/api/v1/resolve`. For Cast,
+   prepare an on-demand queue and use its stream URLs as described above.
+4. Connect to a receiver using the chosen platform's Cast sender SDK. Load
+   the selected item first, then insert the remaining items in bounded batches.
+   Keep the sender open until queue insertion finishes.
 5. Once loaded, the receiver may advance without the sender. A newly
    connected client must reconcile the receiver's reported session with any
    server queue; their states can diverge. Do not silently replace an existing
@@ -341,13 +356,9 @@ test-only endpoint, not the production client API. Do not use the test
 endpoint in a production client. The URL-age test has not yet been confirmed
 on the user's device.
 
-All-at-once resolution can leave later URLs waiting long enough to expire.
-The server offers neither an expiry timestamp nor on-demand proxying or
-automatic refresh for the receiver. Its audio proxy is for browser playback.
-A client-connected refresh strategy
-cannot guarantee playback after the client disconnects. Do not claim this
-system is reliable for long playlists until the chosen strategy is
-implemented and tested.
+On-demand Cast redirects avoid resolving all songs up front, but receiver
+compatibility and long-queue playback still require real-device testing.
+The browser audio proxy does not refresh its source.
 
 ## Client validation checklist
 

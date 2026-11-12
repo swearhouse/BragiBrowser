@@ -872,6 +872,29 @@ async function resolveTrack(video, signal) {
   log(`Skipped “${video.name}” after 3 resolution attempts: ${lastError.message}`);
   return null;
 }
+function castQueueItems(queue, token, start, end) {
+  const items = [];
+  for (let i = start; i < end; i++) {
+    const url = new URL(state.auth.base + `/api/v1/cast-stream/${i}`);
+    url.searchParams.set("token", token);
+    const media = new chrome.cast.media.MediaInfo(url.href, "audio/mp4");
+    media.customData = { bragiBrowser: { queueId: queue.id, index: i } };
+    const metadata = new chrome.cast.media.MusicTrackMediaMetadata();
+    metadata.title = queue.videos[i].name;
+    const thumbnail = trackArtwork(queue.videos[i]);
+    if (thumbnail) metadata.images = [new chrome.cast.Image(thumbnail)];
+    media.metadata = metadata;
+    const item = new chrome.cast.media.QueueItem(media);
+    item.autoplay = true;
+    items.push(item);
+  }
+  return items;
+}
+async function insertCastItems(media, items, before) {
+  const request = new chrome.cast.media.QueueInsertItemsRequest(items);
+  if (before != null) request.insertBefore = before;
+  await new Promise((resolve, reject) => media.queueInsertItems(request, resolve, reject));
+}
 async function startPlayback(playlistId = null, selection = null) {
   if (state.busy || state.castLoading || !state.auth) return;
   const session = state.castContext && state.castContext.getCurrentSession();
@@ -931,31 +954,25 @@ async function startPlayback(playlistId = null, selection = null) {
       state.localIndex = startIndex - 1;
       await nextLocal(generation, controller.signal);
     } else {
-      const items = [];
-      let castStartIndex = -1;
-      for (let i = 0; i < queue.videos.length; i++) {
-        message(`Resolving track ${i + 1} of ${queue.videos.length}…`);
-        const audio = await resolveTrack(queue.videos[i], controller.signal);
-        if (generation !== state.generation) return;
-        if (audio) {
-          if (i >= startIndex && castStartIndex < 0) castStartIndex = items.length;
-          const media = new chrome.cast.media.MediaInfo(audio.url, audio.content_type);
-          media.customData = { bragiBrowser: { queueId: queue.id, index: i } };
-          const metadata = new chrome.cast.media.MusicTrackMediaMetadata();
-          metadata.title = audio.title;
-          const thumbnail = trackArtwork(queue.videos[i]);
-          if (thumbnail) metadata.images = [new chrome.cast.Image(thumbnail)];
-          media.metadata = metadata;
-          const item = new chrome.cast.media.QueueItem(media);
-          item.autoplay = true;
-          items.push(item);
-        }
-      }
-      if (castStartIndex < 0) throw new ApiError("No tracks at or after the selected position could be resolved; nothing was loaded.");
       if (state.castContext.getCurrentSession() !== session) throw new ApiError("The Cast session changed. Reconnect and try again.");
       if (session.getMediaSession() && !window.confirm("The receiver already has media. Replace its current queue?")) {
         message("Receiver queue was not changed.");
         return;
+      }
+      let prepared;
+      try {
+        prepared = await api("/cast-queue", { method: "POST", body: { queue_id: queue.id }, signal: controller.signal });
+      } catch (error) {
+        if (error.status === 404) throw new ApiError("BragiServer must be updated for on-demand Cast playback.");
+        throw error;
+      }
+      if (generation !== state.generation) return;
+      if (prepared && !Object.hasOwn(prepared, "batch_size")) {
+        throw new ApiError("BragiServer must be updated for configurable Cast batches.");
+      }
+      if (!prepared || typeof prepared.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(prepared.token) ||
+          !Number.isInteger(prepared.batch_size) || prepared.batch_size < 1 || prepared.batch_size > 5000) {
+        throw new ApiError("The server returned an invalid Cast queue.");
       }
       if (state.castContext.getCurrentSession() !== session || state.castSessionVersion !== castSessionVersion) {
         throw new ApiError("The Cast session changed. Reconnect and try again.");
@@ -963,12 +980,15 @@ async function startPlayback(playlistId = null, selection = null) {
       const data = new chrome.cast.media.QueueData();
       data.name = queue.name;
       data.repeatMode = chrome.cast.media.RepeatMode.REPEAT_OFF;
-      data.items = items;
-      data.startIndex = castStartIndex;
+      data.items = castQueueItems(queue, prepared.token, startIndex, startIndex + 1);
+      data.startIndex = 0;
       data.startTime = 0;
-      const request = new chrome.cast.media.LoadRequest(items[castStartIndex].media);
+      const request = new chrome.cast.media.LoadRequest(data.items[0].media);
       request.queueData = data;
       request.autoplay = true;
+      if (new TextEncoder().encode(JSON.stringify(request)).length > 32000) {
+        throw new ApiError("The selected track is too large for the Cast queue.");
+      }
       state.castLoading = true;
       setBusy(true);
       message("Sending queue to the receiver; this request cannot be cancelled.");
@@ -982,7 +1002,47 @@ async function startPlayback(playlistId = null, selection = null) {
       state.castQueue = queue;
       stopLocal();
       updateCast();
-      message(`Sent ${items.length} tracks to the receiver. Check its status; temporary URLs may expire before later tracks play.`);
+      const media = session.getMediaSession();
+      const firstId = media && media.currentItemId;
+      if (!media || firstId == null) throw new ApiError("Playback started, but the receiver did not report its queue. Check it before retrying.");
+      const checkSession = () => {
+        if (state.castContext.getCurrentSession() !== session || state.castSessionVersion !== castSessionVersion ||
+            session.getMediaSession() !== media) {
+          throw new ApiError("The Cast session changed while sending the queue. Check the receiver before retrying.");
+        }
+      };
+      const insert = async (start, end, before) => {
+        checkSession();
+        const items = castQueueItems(queue, prepared.token, start, end);
+        if (new TextEncoder().encode(JSON.stringify(items)).length > 32000) {
+          if (end - start === 1) throw new ApiError("A track is too large for the Cast queue. Playback may already have started.");
+          const middle = Math.floor((start + end) / 2);
+          await insert(start, middle, before);
+          await insert(middle, end, before);
+          return;
+        }
+        try { await insertCastItems(media, items, before); }
+        catch { throw new ApiError("The receiver did not confirm the entire queue. Check its queue before retrying."); }
+        checkSession();
+      };
+      state.castLoading = true;
+      setBusy(true);
+      let sent = 1;
+      try {
+        for (let start = startIndex + 1; start < queue.videos.length; start += prepared.batch_size) {
+          const end = Math.min(start + prepared.batch_size, queue.videos.length);
+          await insert(start, end, null);
+          sent += end - start;
+          message(`Sending queue to the receiver: ${sent} of ${queue.videos.length} songs.`);
+        }
+        for (let start = 0; start < startIndex; start += prepared.batch_size) {
+          const end = Math.min(start + prepared.batch_size, startIndex);
+          await insert(start, end, firstId);
+          sent += end - start;
+          message(`Sending queue to the receiver: ${sent} of ${queue.videos.length} songs.`);
+        }
+      } finally { state.castLoading = false; }
+      message(`Sent ${queue.videos.length} tracks to the receiver. Cast links expire in 7 days or when BragiServer restarts.`);
     }
   } catch (error) {
     if (generation === state.generation) reportError(error);

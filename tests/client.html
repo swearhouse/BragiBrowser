@@ -64,6 +64,7 @@ frame.addEventListener("load", async () => {
   let finishAddSong;
   let finishRemoveSong;
   let finishReplaceSong;
+  let castBatchSize = 16;
   let currentQueue = queue;
   const createdPlaylists = [];
   const initialPlaylists = [
@@ -167,6 +168,16 @@ frame.addEventListener("load", async () => {
             : queue;
       }
       return json({queue: currentQueue}, options.method === "POST" ? 201 : 200);
+    }
+    if (path.endsWith("/cast-queue")) {
+      if (mode === "delay") {
+        resolveEntered = true;
+        return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => {
+          cancelled = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        }));
+      }
+      return json({token: "A".repeat(43), expires_in: 604800, batch_size: castBatchSize});
     }
     if (path.endsWith("/resolve")) {
       if (mode === "delay") {
@@ -689,6 +700,8 @@ frame.addEventListener("load", async () => {
     let rejectSeek = false;
     let rejectVolume = false;
     let remoteCommand = "";
+    const insertSizes = [];
+    const insertCounts = [];
     const media = {
       playerState: "PLAYING", currentItemId: 1, media: {duration: 200, metadata: {title: "Existing"}},
       addUpdateListener() {}, removeUpdateListener() {},
@@ -701,8 +714,18 @@ frame.addEventListener("load", async () => {
       play: (request, resolve) => { remoteCommand = "play"; resolve(); },
       stop: (request, resolve) => { remoteCommand = "stop"; resolve(); },
       queueNext: resolve => { remoteCommand = "next"; resolve(); },
-      queuePrev: resolve => { remoteCommand = "previous"; resolve(); }
+      queuePrev: resolve => { remoteCommand = "previous"; resolve(); },
+      queueInsertItems: (request, resolve, reject) => {
+        insertSizes.push(new TextEncoder().encode(JSON.stringify(request.items)).length);
+        insertCounts.push(request.items.length);
+        if (mode === "insert-fail") { reject(); return; }
+        const index = request.insertBefore == null ? media.items.length : media.items.findIndex(item => item.itemId === request.insertBefore);
+        const items = request.items.map(item => ({...item, itemId: nextItemId++}));
+        media.items.splice(index < 0 ? media.items.length : index, 0, ...items);
+        resolve();
+      }
     };
+    let nextItemId = 102;
     const session = {
       getMediaSession: () => media, getCastDevice: () => ({friendlyName: "Test"}),
       getVolume: () => remoteVolume,
@@ -716,17 +739,19 @@ frame.addEventListener("load", async () => {
       addEventListener() {}, removeEventListener() {}, loadMedia: async request => {
         loads++;
         lastLoad = request;
-        check(request.queueData.items.length === 2, "Cast queue lost duplicates or included skipped tracks.");
+        check(request.queueData.items.length === 1, "Cast should start with one unresolved track.");
         if (mode === "load-delay") await new Promise(resolve => { finishLoad = resolve; });
         media.currentItemId = request.queueData.startIndex + 101;
         media.items = request.queueData.items.map((item, index) => ({...item, itemId: index + 101}));
         media.media = request.queueData.items[request.queueData.startIndex].media;
+        nextItemId = 102;
       }
     };
     w.cast = {framework: {SessionEventType: {MEDIA_SESSION: "media", VOLUME_CHANGED: "volume"}}};
     w.chrome.cast = {Image: class { constructor(url) { this.url = url; } }, media: {
       MediaInfo: class { constructor(url, type) { this.url = url; this.type = type; } },
       MusicTrackMediaMetadata: class {}, QueueItem: class { constructor(media) { this.media = media; } },
+      QueueInsertItemsRequest: class { constructor(items) { this.items = items; } },
       QueueData: class {}, LoadRequest: class { constructor(media) { this.media = media; } },
       RepeatMode: {REPEAT_OFF: "off"}, MediaCommand: {SEEK: "seek"},
       SeekRequest: class {}, PauseRequest: class {}, PlayRequest: class {}, StopRequest: class {}
@@ -869,19 +894,22 @@ frame.addEventListener("load", async () => {
     await wait(() => !el("play-selected").disabled);
     allowReplace = true;
     const proxiesBeforeCast = requests.filter(r => r.path.endsWith("/audio-proxy")).length;
+    const resolvesBeforeCast = requests.filter(r => r.path.endsWith("/resolve")).length;
     el("play-selected").click();
     await wait(() => loads === 1);
     await wait(() => !el("play-selected").disabled);
     check(lastLoad.queueData.startIndex === 0, "Default Cast playback did not start at the first track.");
-    check(lastLoad.queueData.items[0].media.url === "https://media.example/signed-secret" &&
-      requests.filter(r => r.path.endsWith("/audio-proxy")).length === proxiesBeforeCast, "Cast playback used the browser audio proxy.");
+    check(lastLoad.queueData.items[0].media.url.includes("/api/v1/cast-stream/0?token=") &&
+      requests.filter(r => r.path.endsWith("/audio-proxy")).length === proxiesBeforeCast &&
+      requests.filter(r => r.path.endsWith("/resolve")).length === resolvesBeforeCast &&
+      media.items.length === 3, "Cast playback resolved songs before sending the queue.");
     check(d.querySelectorAll(".track-button")[0].getAttribute("aria-current") === "true", "The current Cast queue track was not highlighted.");
-    check(lastLoad.queueData.items[0].media.metadata.images[0].url === thumbnailUrl &&
-      lastLoad.queueData.items[1].media.metadata.images[0].url === thirdThumbnailUrl, "Queue artwork was not matched to Cast queue items.");
-    media.currentItemId = 102;
+    check(media.items[0].media.metadata.images[0].url === thumbnailUrl &&
+      media.items[2].media.metadata.images[0].url === thirdThumbnailUrl, "Queue artwork was not matched to Cast queue items.");
+    media.currentItemId = media.items[2].itemId;
     w.eval("updateCast()");
     check(d.querySelectorAll(".track-button")[2].getAttribute("aria-current") === "true", "A Cast track change did not update the highlight.");
-    media.media = lastLoad.queueData.items[1].media;
+    media.media = media.items[2].media;
     media.items = null;
     w.eval("updateCast()");
     check(d.querySelectorAll(".track-button")[2].getAttribute("aria-current") === "true", "Cast media without a queue item list lost the highlight.");
@@ -895,13 +923,14 @@ frame.addEventListener("load", async () => {
     d.querySelectorAll(".track-button")[2].click();
     await wait(() => loads === 2);
     await wait(() => !el("play-selected").disabled);
-    check(lastLoad.queueData.startIndex === 1, "Cast start index did not account for a skipped track.");
-    check(lastLoad.media === lastLoad.queueData.items[1].media, "Cast load media did not match the selected track.");
+    check(lastLoad.queueData.startIndex === 0 && lastLoad.media.customData.bragiBrowser.index === 2 &&
+      media.items.map(item => item.media.customData.bragiBrowser.index).join(",") === "0,1,2",
+      "Cast did not start at the selected track and restore the preceding queue.");
     d.querySelector(".playlist-button").click();
     d.querySelectorAll(".track-button")[1].click();
     await wait(() => loads === 3);
     await wait(() => !el("play-selected").disabled);
-    check(lastLoad.queueData.startIndex === 1, "Failed selected Cast track did not skip forward.");
+    check(lastLoad.media.customData.bragiBrowser.index === 1, "Cast did not start at the selected track.");
     d.querySelector(".playlist-button").click();
     el("open-settings").click();
     el("auto-shuffle").checked = true;
@@ -910,13 +939,55 @@ frame.addEventListener("load", async () => {
     d.querySelectorAll(".track-button")[2].click();
     await wait(() => loads === 4);
     await wait(() => !el("play-selected").disabled);
-    check(lastLoad.queueData.startIndex === 1, "Shuffled Cast duplicate started at the wrong position.");
+    check(lastLoad.media.customData.bragiBrowser.index === 2, "Shuffled Cast duplicate started at the wrong position.");
     mode = "tail-bad";
     d.querySelector(".playlist-button").click();
     d.querySelectorAll(".track-button")[1].click();
-    await wait(() => el("status").textContent.includes("at or after the selected position"));
+    await wait(() => loads === 5);
     await wait(() => !el("play-selected").disabled);
-    check(loads === 4, "Cast played an earlier track when no later track resolved.");
+    check(lastLoad.media.customData.bragiBrowser.index === 2, "Cast did not defer the selected track's resolution.");
+
+    currentQueue = {...queue, id: "large", videos: Array.from({length: 900}, (_, index) => ({
+      name: `Song ${index + 1}`, link: videos[0].link,
+    }))};
+    insertSizes.length = 0;
+    insertCounts.length = 0;
+    castBatchSize = 7;
+    const resolveCount = requests.filter(r => r.path.endsWith("/resolve")).length;
+    w.eval('startPlayback(null, {queueId: "large", index: 450})');
+    await wait(() => loads === 6 && !el("play-selected").disabled);
+    check(media.items.length === 900 && media.items.every((item, index) => item.media.customData.bragiBrowser.index === index) &&
+      lastLoad.media.customData.bragiBrowser.index === 450 &&
+      insertCounts.some(count => count === 7) && insertCounts.every(count => count <= 7) &&
+      insertSizes.length > 1 && insertSizes.every(size => size <= 32000) &&
+      requests.filter(r => r.path.endsWith("/resolve")).length === resolveCount,
+      `A 900-song Cast queue failed: length=${media.items.length}, first=${media.items.slice(0, 3).map(item => item.media.customData.bragiBrowser.index)}, start=${lastLoad.media.customData.bragiBrowser.index}, batches=${insertSizes.length}, max=${Math.max(...insertSizes)}, resolves=${requests.filter(r => r.path.endsWith("/resolve")).length - resolveCount}.`);
+
+    castBatchSize = 16;
+    currentQueue = {...queue, id: "wide", videos: Array.from({length: 40}, (_, index) => ({
+      name: `${index}-${"x".repeat(3000)}`, link: videos[0].link,
+    }))};
+    insertSizes.length = 0;
+    w.eval('startPlayback(null, {queueId: "wide", index: 20})');
+    await wait(() => loads === 7 && !el("play-selected").disabled);
+    check(media.items.length === 40 && media.items.every((item, index) => item.media.customData.bragiBrowser.index === index) &&
+      insertSizes.length > 3 && insertSizes.every(size => size <= 32000),
+      "Large Cast queue items were not split into ordered, bounded messages.");
+
+    castBatchSize = 0;
+    w.eval('startPlayback(null, {queueId: "wide", index: 20})');
+    await wait(() => el("status").textContent.includes("invalid Cast queue"));
+    check(loads === 7, "An invalid batch size was used to load a Cast queue.");
+    castBatchSize = 16;
+    currentQueue = {...queue, id: "large", videos: Array.from({length: 900}, (_, index) => ({
+      name: `Song ${index + 1}`, link: videos[0].link,
+    }))};
+    mode = "insert-fail";
+    insertSizes.length = 0;
+    w.eval('startPlayback(null, {queueId: "large", index: 450})');
+    await wait(() => el("status").textContent.includes("did not confirm the entire queue"));
+    check(loads === 8 && media.items.length === 1 && insertSizes.length === 1,
+      "A failed Cast queue insertion was retried or not reported.");
 
     mode = "delay";
     resolveEntered = false;
@@ -926,7 +997,7 @@ frame.addEventListener("load", async () => {
     w.currentSession = null;
     w.eval("updateCast()");
     await wait(() => cancelled);
-    check(el("status").textContent.includes("preparation cancelled") && loads === 4, "Disconnect did not cancel Cast preparation.");
+    check(el("status").textContent.includes("preparation cancelled") && loads === 8, "Disconnect did not cancel Cast preparation.");
 
     resolveEntered = false;
     cancelled = false;
@@ -935,7 +1006,7 @@ frame.addEventListener("load", async () => {
     w.currentSession = session;
     w.eval("updateCast()");
     await wait(() => cancelled);
-    check(el("status").textContent.includes("preparation cancelled") && loads === 4, "Connecting Cast did not cancel browser preparation.");
+    check(el("status").textContent.includes("preparation cancelled") && loads === 8, "Connecting Cast did not cancel browser preparation.");
 
     w.currentSession = null;
     w.eval("updateCast()");

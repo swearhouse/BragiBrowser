@@ -96,8 +96,8 @@ available if the icon font cannot be loaded.
   a connected Cast receiver may also fetch it. The interface derives an accent
   from the current artwork when its host permits cross-origin image sampling;
   otherwise it uses the default accent.
-- Failed track resolution is attempted three times total, then skipped and
-  recorded in the on-page activity list. Local playback resolves tracks as they
+- For local playback, failed track resolution is attempted three times, then
+  skipped and recorded in the on-page activity list. Local playback resolves tracks as they
   are reached. The browser may require pressing Play in the player
   after asynchronous resolution; a media playback error skips the track.
 - The player controls a connected receiver, or the browser when no receiver is
@@ -121,10 +121,16 @@ available if the icon font cannot be loaded.
   Enabling the visualizer during playback may take effect on the next track.
   Proxy URLs are bearer credentials held in memory; configure server and reverse
   proxy access logs not to record their query strings.
-- Cast queues are resolved before loading. Temporary URLs may expire before
-  later tracks play, and the server cannot refresh them after the sender closes.
-  Receiver playback, seeking and sender-closure behavior require real-device
-  testing; successful loading is not a guarantee of continued playback.
+- Cast queues use BragiServer links which resolve songs when requested. The
+  first song is loaded immediately and the remaining queue is sent in batches:
+  keep the browser open until it reports the queue was sent. The receiver
+  batch size is set in BragiServer's admin Settings (default 16); batches may
+  be split further to fit Cast message limits. The receiver
+  needs to reach BragiServer and the resulting YouTube audio URLs. Links expire
+  after seven days, a server restart, or any account-file change. Cast uses
+  MP4 audio only. Receiver handling of unavailable songs, redirects, seeking,
+  and sender closure requires real-device testing; automatic skipping is not
+  guaranteed. Keep Cast link query strings out of server and proxy access logs.
 - Signing out or changing Cast sessions can cancel preparation but cannot undo
   a server queue request already received by the server. A timed-out queue creation has an unknown outcome; the client
   checks the current queue and does not automatically retry. Once a Cast load
