@@ -59,6 +59,7 @@ frame.addEventListener("load", async () => {
   let proxyCancelled = false;
   let lastLoad;
   let finishLoad;
+  let finishMediaUpdate;
   let finishLogin;
   let finishCreate;
   let finishAddSong;
@@ -702,6 +703,7 @@ frame.addEventListener("load", async () => {
     let remoteCommand = "";
     const insertSizes = [];
     const insertCounts = [];
+    const mediaSessionListeners = new Set();
     const media = {
       playerState: "PLAYING", currentItemId: 1, media: {duration: 200, metadata: {title: "Existing"}},
       addUpdateListener() {}, removeUpdateListener() {},
@@ -736,15 +738,29 @@ frame.addEventListener("load", async () => {
         if (delayMute) await new Promise(resolve => { finishMute = resolve; });
         remoteMuted = value;
       },
-      addEventListener() {}, removeEventListener() {}, loadMedia: async request => {
+      addEventListener: (type, listener) => {
+        if (type === "media") mediaSessionListeners.add(listener);
+      },
+      removeEventListener: (type, listener) => {
+        if (type === "media") mediaSessionListeners.delete(listener);
+      },
+      loadMedia: async request => {
         loads++;
         lastLoad = request;
         check(request.queueData.items.length === 1, "Cast should start with one unresolved track.");
         if (mode === "load-delay") await new Promise(resolve => { finishLoad = resolve; });
-        media.currentItemId = request.queueData.startIndex + 101;
-        media.items = request.queueData.items.map((item, index) => ({...item, itemId: index + 101}));
-        media.media = request.queueData.items[request.queueData.startIndex].media;
-        nextItemId = 102;
+        const updateMedia = () => {
+          media.currentItemId = request.queueData.startIndex + 101;
+          media.items = request.queueData.items.map((item, index) => ({...item, itemId: index + 101}));
+          media.media = request.queueData.items[request.queueData.startIndex].media;
+          nextItemId = 102;
+          mediaSessionListeners.forEach(listener => listener({}));
+        };
+        if (mode === "load-status-delay") {
+          finishMediaUpdate = updateMedia;
+          return;
+        }
+        updateMedia();
       }
     };
     w.cast = {framework: {SessionEventType: {MEDIA_SESSION: "media", VOLUME_CHANGED: "volume"}}};
@@ -903,6 +919,17 @@ frame.addEventListener("load", async () => {
       requests.filter(r => r.path.endsWith("/audio-proxy")).length === proxiesBeforeCast &&
       requests.filter(r => r.path.endsWith("/resolve")).length === resolvesBeforeCast &&
       media.items.length === 3, "Cast playback resolved songs before sending the queue.");
+    currentQueue = {...queue, id: "delayed-status"};
+    mode = "load-status-delay";
+    finishMediaUpdate = null;
+    el("play-selected").click();
+    await wait(() => loads === 2 && typeof finishMediaUpdate === "function");
+    check(el("play-selected").disabled, "Cast insertion started before receiver media status arrived.");
+    finishMediaUpdate();
+    await wait(() => el("status").textContent.includes("Sent 3 tracks to the receiver"));
+    check(media.items.length === 3, "Cast playback did not insert tracks after delayed receiver status.");
+    currentQueue = queue;
+    mode = "normal";
     check(d.querySelectorAll(".track-button")[0].getAttribute("aria-current") === "true", "The current Cast queue track was not highlighted.");
     check(media.items[0].media.metadata.images[0].url === thumbnailUrl &&
       media.items[2].media.metadata.images[0].url === thirdThumbnailUrl, "Queue artwork was not matched to Cast queue items.");
@@ -921,14 +948,14 @@ frame.addEventListener("load", async () => {
     d.querySelector(".playlist-button").click();
     check(d.querySelectorAll(".track-button")[2].getAttribute("aria-current") === "true", "The Cast duplicate was not highlighted in the playlist.");
     d.querySelectorAll(".track-button")[2].click();
-    await wait(() => loads === 2);
+    await wait(() => loads === 3);
     await wait(() => !el("play-selected").disabled);
     check(lastLoad.queueData.startIndex === 0 && lastLoad.media.customData.bragiBrowser.index === 2 &&
       media.items.map(item => item.media.customData.bragiBrowser.index).join(",") === "0,1,2",
       "Cast did not start at the selected track and restore the preceding queue.");
     d.querySelector(".playlist-button").click();
     d.querySelectorAll(".track-button")[1].click();
-    await wait(() => loads === 3);
+    await wait(() => loads === 4);
     await wait(() => !el("play-selected").disabled);
     check(lastLoad.media.customData.bragiBrowser.index === 1, "Cast did not start at the selected track.");
     d.querySelector(".playlist-button").click();
@@ -937,13 +964,13 @@ frame.addEventListener("load", async () => {
     el("auto-shuffle").dispatchEvent(new w.Event("change"));
     el("close-settings").click();
     d.querySelectorAll(".track-button")[2].click();
-    await wait(() => loads === 4);
+    await wait(() => loads === 5);
     await wait(() => !el("play-selected").disabled);
     check(lastLoad.media.customData.bragiBrowser.index === 2, "Shuffled Cast duplicate started at the wrong position.");
     mode = "tail-bad";
     d.querySelector(".playlist-button").click();
     d.querySelectorAll(".track-button")[1].click();
-    await wait(() => loads === 5);
+    await wait(() => loads === 6);
     await wait(() => !el("play-selected").disabled);
     check(lastLoad.media.customData.bragiBrowser.index === 2, "Cast did not defer the selected track's resolution.");
 
@@ -955,7 +982,7 @@ frame.addEventListener("load", async () => {
     castBatchSize = 7;
     const resolveCount = requests.filter(r => r.path.endsWith("/resolve")).length;
     w.eval('startPlayback(null, {queueId: "large", index: 450})');
-    await wait(() => loads === 6 && !el("play-selected").disabled);
+    await wait(() => loads === 7 && !el("play-selected").disabled);
     check(media.items.length === 900 && media.items.every((item, index) => item.media.customData.bragiBrowser.index === index) &&
       lastLoad.media.customData.bragiBrowser.index === 450 &&
       insertCounts.some(count => count === 7) && insertCounts.every(count => count <= 7) &&
@@ -969,7 +996,7 @@ frame.addEventListener("load", async () => {
     }))};
     insertSizes.length = 0;
     w.eval('startPlayback(null, {queueId: "wide", index: 20})');
-    await wait(() => loads === 7 && !el("play-selected").disabled);
+    await wait(() => loads === 8 && !el("play-selected").disabled);
     check(media.items.length === 40 && media.items.every((item, index) => item.media.customData.bragiBrowser.index === index) &&
       insertSizes.length > 3 && insertSizes.every(size => size <= 32000),
       "Large Cast queue items were not split into ordered, bounded messages.");
@@ -977,7 +1004,7 @@ frame.addEventListener("load", async () => {
     castBatchSize = 0;
     w.eval('startPlayback(null, {queueId: "wide", index: 20})');
     await wait(() => el("status").textContent.includes("invalid Cast queue"));
-    check(loads === 7, "An invalid batch size was used to load a Cast queue.");
+    check(loads === 8, "An invalid batch size was used to load a Cast queue.");
     castBatchSize = 16;
     currentQueue = {...queue, id: "large", videos: Array.from({length: 900}, (_, index) => ({
       name: `Song ${index + 1}`, link: videos[0].link,
@@ -986,7 +1013,7 @@ frame.addEventListener("load", async () => {
     insertSizes.length = 0;
     w.eval('startPlayback(null, {queueId: "large", index: 450})');
     await wait(() => el("status").textContent.includes("did not confirm the entire queue"));
-    check(loads === 8 && media.items.length === 1 && insertSizes.length === 1,
+    check(loads === 9 && media.items.length === 1 && insertSizes.length === 1,
       "A failed Cast queue insertion was retried or not reported.");
 
     mode = "delay";
@@ -997,7 +1024,7 @@ frame.addEventListener("load", async () => {
     w.currentSession = null;
     w.eval("updateCast()");
     await wait(() => cancelled);
-    check(el("status").textContent.includes("preparation cancelled") && loads === 8, "Disconnect did not cancel Cast preparation.");
+    check(el("status").textContent.includes("preparation cancelled") && loads === 9, "Disconnect did not cancel Cast preparation.");
 
     resolveEntered = false;
     cancelled = false;
@@ -1006,7 +1033,7 @@ frame.addEventListener("load", async () => {
     w.currentSession = session;
     w.eval("updateCast()");
     await wait(() => cancelled);
-    check(el("status").textContent.includes("preparation cancelled") && loads === 8, "Connecting Cast did not cancel browser preparation.");
+    check(el("status").textContent.includes("preparation cancelled") && loads === 9, "Connecting Cast did not cancel browser preparation.");
 
     w.currentSession = null;
     w.eval("updateCast()");

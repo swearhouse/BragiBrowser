@@ -895,6 +895,53 @@ async function insertCastItems(media, items, before) {
   if (before != null) request.insertBefore = before;
   await new Promise((resolve, reject) => media.queueInsertItems(request, resolve, reject));
 }
+function waitForCastMediaSession(session, sessionVersion, generation, signal, queueId, itemIndex) {
+  return new Promise((resolve, reject) => {
+    const eventType = cast.framework.SessionEventType.MEDIA_SESSION;
+    let settled = false;
+    let timeout;
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      session.removeEventListener(eventType, onMediaSession);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const fail = error => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = () => fail(new DOMException("Cancelled", "AbortError"));
+    const onMediaSession = () => {
+      if (settled) return;
+      if (signal.aborted || generation !== state.generation) {
+        fail(new DOMException("Cancelled", "AbortError"));
+        return;
+      }
+      if (state.castContext.getCurrentSession() !== session || state.castSessionVersion !== sessionVersion) {
+        fail(new ApiError("The Cast session changed during loading; check the receiver before retrying."));
+        return;
+      }
+      const media = session.getMediaSession();
+      const currentItem = media && media.media && media.media.customData && media.media.customData.bragiBrowser;
+      if (media && media.currentItemId != null && currentItem &&
+          currentItem.queueId === queueId && currentItem.index === itemIndex) {
+        settled = true;
+        cleanup();
+        resolve(media);
+      }
+    };
+    session.addEventListener(eventType, onMediaSession);
+    signal.addEventListener("abort", onAbort, { once: true });
+    timeout = setTimeout(() => {
+      onMediaSession();
+      if (!settled) {
+        fail(new ApiError("Playback started, but the receiver did not report its queue. Check it before retrying."));
+      }
+    }, 10000);
+    onMediaSession();
+  });
+}
 async function startPlayback(playlistId = null, selection = null) {
   if (state.busy || state.castLoading || !state.auth) return;
   const session = state.castContext && state.castContext.getCurrentSession();
@@ -1002,9 +1049,10 @@ async function startPlayback(playlistId = null, selection = null) {
       state.castQueue = queue;
       stopLocal();
       updateCast();
-      const media = session.getMediaSession();
-      const firstId = media && media.currentItemId;
-      if (!media || firstId == null) throw new ApiError("Playback started, but the receiver did not report its queue. Check it before retrying.");
+      const media = await waitForCastMediaSession(
+        session, castSessionVersion, generation, controller.signal, queue.id, startIndex,
+      );
+      const firstId = media.currentItemId;
       const checkSession = () => {
         if (state.castContext.getCurrentSession() !== session || state.castSessionVersion !== castSessionVersion ||
             session.getMediaSession() !== media) {
