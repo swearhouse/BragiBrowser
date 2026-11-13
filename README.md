@@ -10,19 +10,20 @@ Chromecast using Google's Cast Web Sender SDK.
    HTTP exposes Basic credentials to the network, so use it only in a trusted
    test environment. For production, use HTTPS through a trusted reverse proxy.
    Do not expose BragiServer directly to the internet.
-2. Serve this folder from a trusted HTTPS website, or use `localhost` for
-   development. For example, run `python -m http.server 8765` in this folder
-   and open `http://localhost:8765`. Do not open the HTML file directly.
+2. Set `BRAGI_SERVER_URL` to the HTTP or HTTPS BragiServer base URL reachable
+   by the browser and Cast receiver, without credentials, query, or fragment.
+   This URL is public client configuration; do not put secrets in it.
+   Run the Docker deployment below, or configure a static server as described
+   in **Local development**. Do not open the HTML file directly.
 3. If the client and API have different origins, add the **exact client
    origin**, such as `http://localhost:8765`, in BragiServer's management UI
    under Settings. CORS, TLS certificates, browser network policies and mixed
    content can prevent connections. Redirects are rejected.
-4. Enter the HTTP or HTTPS server URL and an existing account's credentials. The password,
-   authentication header, and resolved media URLs are held in memory only; signing out or reloading
+4. Enter an existing account's credentials. The password, authentication header,
+   and resolved media URLs are held in memory only; signing out or reloading
    requires signing in again. Sign-out stops local playback, not Cast playback.
-   After a successful connection the server URL and username are saved in browser localStorage
-   and prefilled read-only on future visits from the same browser and client origin.
-   Use **Edit connection details** to change them, and lock them again if desired.
+   The last entered username is saved in browser localStorage and prefilled
+   on future visits from the same browser and client origin, where it remains editable.
    The auto shuffle and visualizer settings are also saved there. Clear the browser's site data
    to remove them; they are not removed on sign-out.
    Browsers may block requests from an HTTPS client page to an HTTP server as
@@ -30,17 +31,21 @@ Chromecast using Google's Cast Web Sender SDK.
 
 ### Docker
 
-Copy this folder to the Docker host, then build and run the static client:
+Set `BRAGI_SERVER_URL` in the Docker host's environment or its Compose `.env`
+file, then build and run the static client. For example:
 
 ```sh
+export BRAGI_SERVER_URL=https://bragi.example
 docker compose up -d --build
 ```
 
 On CasaOS, run this command from the project folder on the CasaOS machine.
 Open `http://<host-ip>:8765` from your browser. The container serves only the
-client; it does not include BragiServer. Enter a server URL reachable from the
-browser, not a Docker-internal hostname unless the browser can resolve it. If
-the origins differ, allow the exact client origin in BragiServer's Settings.
+client; it does not include BragiServer. Do not use a Docker-internal hostname
+unless the browser and Cast receiver can resolve it. If the origins differ,
+allow the exact client origin in BragiServer's Settings. After changing the
+environment variable, run `docker compose up -d` to recreate the container.
+The container requires the variable and generates `server-url.txt` at startup.
 
 The Compose port binding is reachable on the host's network interfaces; use it
 only on a trusted network. To restrict it to the Docker host, change the
@@ -49,6 +54,22 @@ binding in `compose.yaml` to `127.0.0.1:8765:80` and open
 trusted HTTPS reverse proxy and use HTTPS for BragiServer as well. Cast
 requires a supported browser and a secure context; plain HTTP on a LAN address
 may not work.
+
+### Local development
+
+The static server cannot read an environment variable on behalf of the
+browser. Generate `server-url.txt` from `BRAGI_SERVER_URL` before serving the
+folder, and regenerate it when the variable changes. For example, in
+PowerShell:
+
+```powershell
+$env:BRAGI_SERVER_URL = "http://localhost:8000"
+[System.IO.File]::WriteAllText((Join-Path (Get-Location).Path "server-url.txt"), $env:BRAGI_SERVER_URL)
+python -m http.server 8765
+```
+
+In a POSIX shell, use `printf '%s' "$BRAGI_SERVER_URL" > server-url.txt`
+instead. Open `http://localhost:8765`. The generated file is ignored by Git.
 
 Click the Bragi logo or name to hide or show the playlist sidebar.
 Select a playlist in the sidebar to inspect its tracks, then press **Play
@@ -113,6 +134,11 @@ available if the icon font cannot be loaded.
   support. Use the volume icon to mute or unmute without changing the volume
   level. Cast volume and mute controls reflect receiver changes from other
   senders; local and receiver settings are independent.
+- On supported browsers, Media Session exposes playback controls, track
+  information, and seeking to the operating system and connected media
+  controls. Availability depends on the browser and device; Cast media-key
+  routing also depends on the platform. Hardware volume buttons normally
+  control the device or car, not the player or Chromecast volume slider.
 - **Settings** offers spectrum bars (the default), mirrored bars, a radial
   spectrum, a waveform, or off. Spectrum bars spread the active frequency
   range across the card; mirrored bars spread the spectrum symmetrically from

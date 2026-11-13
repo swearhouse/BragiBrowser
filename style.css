@@ -20,7 +20,7 @@ body {
   min-height: 100vh;
   margin: 0;
   background: radial-gradient(ellipse at 78% 0%, #18232a 0, #0b0e13 48rem);
-  background: radial-gradient(ellipse at 78% 0%, color-mix(in srgb, var(--accent) 10%, #0b0e13) 0, #0b0e13 48rem);
+  background: radial-gradient(ellipse at 78% 0%, color-mix(in srgb, var(--accent) 20%, #0b0e13) 0, #0b0e13 48rem);
   font-size: 14px;
   line-height: 1.5;
 }
@@ -101,7 +101,6 @@ dialog::backdrop { background: #000a; }
 #login-form { display: grid; gap: 14px; margin-top: 24px; }
 #login-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
 #login-form input { width: 100%; }
-#login-form input:read-only { color: var(--muted); }
 .eyebrow { margin-bottom: 5px; color: var(--accent); font-size: 11px; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
 .app-shell { display: grid; align-items: start; grid-template-columns: 280px minmax(0, 1fr); gap: 28px; }
 .app-shell.sidebar-hidden { grid-template-columns: minmax(0, 1fr); }

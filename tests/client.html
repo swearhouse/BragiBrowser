@@ -34,6 +34,17 @@ frame.addEventListener("load", async () => {
   const originalSetItem = w.Storage.prototype.setItem;
   const originalImage = w.Image;
   const originalSetTimeout = w.setTimeout;
+  const mediaHandlers = {};
+  const mediaSession = {
+    metadata: null, playbackState: "none", position: null, unsupported: null,
+    setActionHandler(action, handler) {
+      if (action === this.unsupported) throw new TypeError("Unsupported action");
+      mediaHandlers[action] = handler;
+    },
+    setPositionState(position) { this.position = position || null; }
+  };
+  Object.defineProperty(w.navigator, "mediaSession", {value: mediaSession, configurable: true});
+  w.eval("mediaMetadataKey = null; Object.keys(mediaActionStates).forEach(key => delete mediaActionStates[key]); updatePlayer()");
   const paletteRequests = [];
   w.Image = function() {
     const image = d.createElement("canvas");
@@ -67,6 +78,8 @@ frame.addEventListener("load", async () => {
   let finishReplaceSong;
   let castBatchSize = 16;
   let currentQueue = queue;
+  let configuredServerUrl = "https://server.example";
+  let configFailure = "";
   const createdPlaylists = [];
   const initialPlaylists = [
     {id: "p", name: "Mix", videos: videos.map(video => ({...video, thumbnail_url: "https://artwork.example/playlist.png"}))},
@@ -80,6 +93,11 @@ frame.addEventListener("load", async () => {
     const path = new URL(url).pathname;
     requests.push({url, path, method: options.method, body: options.body, headers: options.headers, redirect: options.redirect, credentials: options.credentials});
     const json = (body, status = 200) => new Response(JSON.stringify(body), {status, headers: {"Content-Type": "application/json"}});
+    if (path.endsWith("/server-url.txt")) {
+      if (configFailure === "network") throw new TypeError("network failure");
+      if (configFailure === "missing") return new Response("Not found", {status: 404});
+      return new Response(configuredServerUrl, {status: 200});
+    }
     if (path.endsWith("/playlists")) {
       if (options.method === "POST") {
         if (mode === "playlist-uncertain") throw new TypeError("network failure");
@@ -270,8 +288,9 @@ frame.addEventListener("load", async () => {
     });
     check(!defaultFrame.contentDocument.getElementById("auto-shuffle").checked, "Auto shuffle should default to off.");
     check(defaultFrame.contentDocument.getElementById("visualizer-mode").value === "bars", "The visualizer should default to spectrum bars.");
-    check(!defaultFrame.contentDocument.getElementById("server").readOnly &&
-      !defaultFrame.contentDocument.getElementById("username").readOnly, "Unsaved connection fields should be editable.");
+    check(!defaultFrame.contentDocument.getElementById("server") &&
+      !defaultFrame.contentDocument.getElementById("edit-connection") &&
+      !defaultFrame.contentDocument.getElementById("username").readOnly, "Server URL input or username lock remained visible.");
     defaultFrame.remove();
     el("open-settings").click();
     check(!el("settings-panel").hidden && el("login-panel").hidden, "Settings did not open from the login page.");
@@ -293,39 +312,58 @@ frame.addEventListener("load", async () => {
       document.body.append(legacyFrame);
     });
     const legacy = legacyFrame.contentDocument;
-    check(legacy.getElementById("server").readOnly && !legacy.getElementById("username").readOnly,
+    check(!legacy.getElementById("server") && !legacy.getElementById("username").readOnly,
       "A previously saved server URL blocked entry of an unsaved username.");
-    legacy.getElementById("edit-connection").click();
-    check(!legacy.getElementById("server").readOnly && !legacy.getElementById("username").readOnly,
-      "Edit did not unlock partially saved connection details.");
     legacyFrame.remove();
     localStorage.setItem(usernameKey, "previous-user");
-    el("server").value = "ftp://server.example";
     el("username").value = "alice";
+    el("username").dispatchEvent(new w.Event("input", {bubbles: true}));
+    check(localStorage.getItem(usernameKey) === "alice", "Editing the username did not save it immediately.");
     el("password").value = "secret";
+    configFailure = "missing";
     el("login-form").requestSubmit();
-    await wait(() => el("status").textContent.includes("HTTP or HTTPS server URL"));
-    check(requests.length === 0, "Unsupported server scheme was contacted.");
-    el("server").value = "https://server.example";
+    await wait(() => el("status").textContent.includes("Could not load the BragiServer configuration"));
+    configFailure = "network";
+    el("login-form").requestSubmit();
+    await wait(() => el("status").textContent.includes("Could not load the BragiServer configuration") && !el("login-button").disabled);
+    configFailure = "";
+    configuredServerUrl = "ftp://server.example";
+    el("login-form").requestSubmit();
+    await wait(() => el("status").textContent.includes("Invalid BragiServer configuration"));
+    configuredServerUrl = "https://user:secret@server.example";
+    el("login-form").requestSubmit();
+    await wait(() => el("status").textContent.includes("without credentials") && !el("login-button").disabled);
+    configuredServerUrl = "https://server.example?";
+    el("login-form").requestSubmit();
+    await wait(() => !el("login-button").disabled);
+    check(el("status").textContent.includes("Invalid BragiServer configuration"),
+      "A server URL with an empty query was accepted.");
+    check(!requests.some(r => r.path.startsWith("/api/v1")), "Invalid or missing server configuration was contacted.");
+    configuredServerUrl = "https://server.example";
     mode = "invalid";
     el("login-form").requestSubmit();
     await wait(() => el("status").textContent.includes("Authentication failed"));
     check(el("library").hidden, "Invalid credentials signed in.");
     check(localStorage.getItem(serverUrlKey) === "http://old.example", "Failed login replaced the saved server URL.");
-    check(localStorage.getItem(usernameKey) === "previous-user", "Failed login replaced the saved username.");
+    check(localStorage.getItem(usernameKey) === "alice", "Failed login lost the last entered username.");
     mode = "login-delay";
-    el("server").value = "http://server.example:8000";
+    configuredServerUrl = "http://server.example:8000";
     el("password").value = "secret";
     el("login-form").requestSubmit();
     await wait(() => typeof finishLogin === "function");
     el("open-settings").click();
+    el("username").value = "later-user";
+    el("username").dispatchEvent(new w.Event("input", {bubbles: true}));
     finishLogin();
     await wait(() => !el("signout").hidden);
     check(!el("settings-panel").hidden && el("library").hidden, "Login interrupted the open settings view.");
+    check(localStorage.getItem(usernameKey) === "later-user", "Login overwrote a newer username entered while connecting.");
+    el("username").value = "alice";
+    el("username").dispatchEvent(new w.Event("input", {bubbles: true}));
     el("close-settings").click();
     await wait(() => !el("library").hidden);
     mode = "normal";
-    check(localStorage.getItem(serverUrlKey) === "http://server.example:8000", "Successful login did not save the server URL.");
+    check(localStorage.getItem(serverUrlKey) === "http://old.example", "Successful login changed the legacy server URL.");
     check(localStorage.getItem(usernameKey) === "alice", "Successful login did not save the username.");
     const reloadFrame = document.createElement("iframe");
     reloadFrame.hidden = true;
@@ -335,22 +373,19 @@ frame.addEventListener("load", async () => {
       reloadFrame.addEventListener("load", () => { clearTimeout(timer); resolve(); }, {once: true});
       document.body.append(reloadFrame);
     });
-    check(reloadFrame.contentDocument.getElementById("server").value === "http://server.example:8000", "A fresh client did not prefill the saved server URL.");
     const reloadDoc = reloadFrame.contentDocument;
-    check(reloadDoc.getElementById("username").value === "alice" && reloadDoc.getElementById("server").readOnly &&
-      reloadDoc.getElementById("username").readOnly, "Saved connection details were not prefilled read-only.");
+    check(!reloadDoc.getElementById("server") && reloadDoc.getElementById("username").value === "alice" &&
+      !reloadDoc.getElementById("username").readOnly && !reloadDoc.getElementById("edit-connection"),
+      "Saved username was not prefilled and editable.");
     check(reloadDoc.getElementById("password").value === "", "A fresh client restored the password.");
-    reloadDoc.getElementById("edit-connection").click();
-    check(!reloadDoc.getElementById("server").readOnly && !reloadDoc.getElementById("username").readOnly &&
-      reloadDoc.getElementById("edit-connection").textContent.includes("Lock"), "Edit did not unlock connection details.");
+    reloadDoc.getElementById("username").value = "another-user";
+    reloadDoc.getElementById("username").dispatchEvent(new reloadFrame.contentWindow.Event("input", {bubbles: true}));
+    check(localStorage.getItem(usernameKey) === "another-user", "Editing without connecting did not update the saved username.");
     reloadDoc.getElementById("username").value = "";
-    reloadDoc.getElementById("edit-connection").click();
-    check(reloadDoc.getElementById("server").readOnly && reloadDoc.getElementById("username").readOnly &&
-      reloadDoc.getElementById("edit-connection").textContent.includes("Edit"), "Lock did not make both fields read-only.");
-    reloadDoc.getElementById("password").value = "secret";
-    reloadDoc.getElementById("login-form").requestSubmit();
-    await wait(() => reloadDoc.getElementById("status").textContent.includes("Enter a username"));
-    check(localStorage.getItem(usernameKey) === "alice", "Editing without connecting changed the saved username.");
+    reloadDoc.getElementById("username").dispatchEvent(new reloadFrame.contentWindow.Event("input", {bubbles: true}));
+    check(localStorage.getItem(usernameKey) === "", "Clearing the username did not update browser storage.");
+    reloadDoc.getElementById("username").value = "alice";
+    reloadDoc.getElementById("username").dispatchEvent(new reloadFrame.contentWindow.Event("input", {bubbles: true}));
     check(reloadFrame.contentDocument.getElementById("auto-shuffle").checked, "A fresh client did not restore auto shuffle.");
     check(reloadFrame.contentDocument.getElementById("visualizer-mode").value === "wave", "A fresh client did not restore the visualizer.");
     reloadFrame.remove();
@@ -431,6 +466,35 @@ frame.addEventListener("load", async () => {
     el("play-selected").click();
     await wait(() => el("queue-status").textContent.includes("(1 of 3)"));
     await wait(() => !el("play-selected").disabled);
+    check(mediaSession.metadata && mediaSession.metadata.title === "One" && mediaSession.metadata.album === "Mix" &&
+      mediaSession.metadata.artwork[0].src === thumbnailUrl && mediaSession.playbackState === "playing" &&
+      mediaSession.position.duration === 180 && mediaSession.position.position === 0 &&
+      typeof mediaHandlers.nexttrack === "function" && mediaHandlers.previoustrack === null,
+      "Local playback did not publish its metadata, position, state, and available actions.");
+    await mediaHandlers.pause({});
+    check(localPaused && mediaSession.playbackState === "paused", "Media Session pause did not pause local playback.");
+    await mediaHandlers.pause({});
+    check(localPaused, "Repeated Media Session pause restarted local playback.");
+    await mediaHandlers.play({});
+    await mediaHandlers.play({});
+    check(!localPaused && mediaSession.playbackState === "playing", "Media Session play did not resume local playback.");
+    await mediaHandlers.seekto({seekTime: 500});
+    check(localTime === 180 && mediaSession.position.position === 180, "Media Session seek did not clamp to the duration.");
+    await mediaHandlers.seekbackward({seekOffset: 20});
+    await mediaHandlers.seekforward({});
+    check(localTime === 170, "Media Session relative seeking did not use the requested and default offsets.");
+    await mediaHandlers.seekto({seekTime: -5});
+    check(localTime === 0, "Media Session seek did not clamp to the start.");
+    mediaSession.unsupported = "seekforward";
+    w.eval("delete mediaActionStates.seekforward; updatePlayer()");
+    check(el("activity").textContent.includes('Media session action "seekforward"') && typeof mediaHandlers.nexttrack === "function",
+      "An unsupported Media Session action prevented other controls or was not reported.");
+    mediaSession.unsupported = null;
+    w.eval("delete mediaActionStates.seekforward; updatePlayer()");
+    Object.defineProperty(w.navigator, "mediaSession", {value: undefined, configurable: true});
+    w.eval("updatePlayer()");
+    Object.defineProperty(w.navigator, "mediaSession", {value: mediaSession, configurable: true});
+    w.eval("updatePlayer()");
     check(el("playlist-title").textContent === "Mix - (3 songs)" &&
       d.querySelectorAll(".edit-song").length === 3 && !d.querySelector(".edit-song").disabled,
       "Starting browser playback did not keep the saved playlist editable.");
@@ -651,10 +715,12 @@ frame.addEventListener("load", async () => {
     check(!audio.muted && audio.volume === 0.4 && el("volume-value").textContent === "40%" &&
       el("mute").getAttribute("aria-label") === "Mute", "Local unmute did not restore the previous volume.");
     mode = "proxy-failed";
-    el("next").click();
+    mediaHandlers.nexttrack({});
     await wait(() => el("queue-status").textContent.includes("(3 of 3)"));
     await wait(() => !el("play-selected").disabled);
     check(badAttempts === 3, "A failed track should have exactly three resolution attempts.");
+    check(mediaHandlers.nexttrack === null && typeof mediaHandlers.previoustrack === "function" &&
+      mediaSession.metadata.artwork.length === 0, "Media Session did not update at the end of the queue.");
     check(audio.src === "https://media.example/signed-secret" && !audio.hasAttribute("crossorigin") && !localPaused &&
       el("visualizer-status").textContent.includes("unavailable") && el("activity").textContent.includes("Could not prepare the audio proxy"),
       "A proxy creation failure did not fall back to direct playback.");
@@ -710,7 +776,7 @@ frame.addEventListener("load", async () => {
     el("next").click();
     await wait(() => el("queue-status").textContent.includes("(3 of 3)"));
     await wait(() => !el("play-selected").disabled);
-    el("previous").click();
+    mediaHandlers.previoustrack({});
     await wait(() => el("queue-status").textContent.includes("(2 of 3)"));
     await wait(() => !el("play-selected").disabled);
     currentQueue = {...queue, id: "changed"};
@@ -735,6 +801,9 @@ frame.addEventListener("load", async () => {
     el("signout").click();
     await wait(() => proxyCancelled);
     check(el("status").textContent.includes("Signed out") && el("library").hidden, "Sign-out did not cancel proxy preparation.");
+    check(mediaSession.metadata === null && mediaSession.playbackState === "none" &&
+      Object.values(mediaHandlers).every(handler => handler === null) && mediaSession.position === null,
+      "Sign-out did not clear the Media Session.");
 
     mode = "normal";
     el("password").value = "secret";
@@ -842,6 +911,19 @@ frame.addEventListener("load", async () => {
     w.confirm = () => allowReplace;
     w.eval("state.castContext = {getCurrentSession: () => window.currentSession}; updateCast();");
     check(el("output-status").textContent === "Test", "Connected receiver was not automatically selected.");
+    check(mediaSession.metadata.title === "Existing" && mediaSession.playbackState === "playing" &&
+      mediaSession.position.duration === 200 && mediaSession.position.position === 20,
+      "Media Session did not follow the selected Cast receiver.");
+    await mediaHandlers.pause({});
+    check(remoteCommand === "pause" && !localPaused, "Media Session pause did not target the receiver.");
+    await mediaHandlers.seekto({seekTime: 500});
+    check(remoteTime === 200, "Media Session seek did not target and clamp the receiver position.");
+    remoteTime = 20;
+    w.eval("window.testAuth = state.auth; state.auth = null; updatePlayer()");
+    check(mediaSession.metadata === null && mediaSession.playbackState === "none" &&
+      Object.values(mediaHandlers).every(handler => handler === null),
+      "A signed-out Cast session retained Media Session controls.");
+    w.eval("state.auth = window.testAuth; delete window.testAuth; updatePlayer()");
     check(el("cast-status").textContent === "Connected: Test", "The header did not retain the Cast connection status.");
     delayMute = true;
     el("mute").click();
@@ -878,6 +960,7 @@ frame.addEventListener("load", async () => {
     media.media.metadata.images = [{url: "https://artwork.example/receiver.png"}];
     w.eval("updateCast()");
     check(el("player-artwork").getAttribute("src") === "https://artwork.example/receiver.png", "Receiver artwork was not displayed.");
+    check(mediaSession.metadata.artwork[0].src === "https://artwork.example/receiver.png", "Media Session did not update Cast artwork.");
     el("player-artwork").dispatchEvent(new w.Event("load"));
     el("player-background").dispatchEvent(new w.Event("load"));
     check(el("player-background").getAttribute("src") === "https://artwork.example/receiver.png" && !el("player-background").hidden, "Receiver artwork was not used for the background.");
@@ -904,11 +987,11 @@ frame.addEventListener("load", async () => {
     check(el("play-pause-icon").textContent === "play_arrow", "Paused receiver should show the play icon.");
     el("play-pause").click();
     await wait(() => remoteCommand === "play");
-    el("next").click();
+    mediaHandlers.nexttrack({});
     await wait(() => remoteCommand === "next");
-    el("previous").click();
+    mediaHandlers.previoustrack({});
     await wait(() => remoteCommand === "previous");
-    el("stop").click();
+    mediaHandlers.stop({});
     await wait(() => remoteCommand === "stop");
     el("seek").value = "50";
     el("seek").dispatchEvent(new w.Event("input"));
@@ -926,13 +1009,12 @@ frame.addEventListener("load", async () => {
     check(el("volume-value").textContent === "75%", "External receiver volume was not reflected.");
     seekSupported = false;
     w.eval("updateCast()");
-    check(el("seek").disabled, "Unsupported receiver seek should be disabled.");
+    check(el("seek").disabled && mediaHandlers.seekto === null && mediaSession.position === null,
+      "Unsupported receiver seek should be disabled in both controls.");
     seekSupported = true;
     w.eval("updateCast()");
     rejectSeek = true;
-    el("seek").value = "80";
-    el("seek").dispatchEvent(new w.Event("input"));
-    el("seek").dispatchEvent(new w.Event("change"));
+    await mediaHandlers.seekto({seekTime: 80});
     await wait(() => el("status").textContent.includes("did not confirm the seek"));
     rejectSeek = false;
     rejectVolume = true;
@@ -1177,8 +1259,10 @@ frame.addEventListener("load", async () => {
 
     w.currentSession = null;
     w.eval("updateCast()");
-    el("stop").click();
+    mediaHandlers.stop({});
     check(!d.querySelector(".track-button[aria-current=true]"), "Stopping playback retained the current track highlight.");
+    check(mediaSession.metadata === null && mediaSession.playbackState === "none" && mediaSession.position === null,
+      "Stopping browser playback did not clear Media Session state.");
     mode = "invalid-proxy";
     el("play-selected").click();
     await wait(() => !el("play-selected").disabled);
@@ -1211,7 +1295,7 @@ frame.addEventListener("load", async () => {
     el("signout").click();
     check(!el("login-panel").hidden, "Sign-out did not return to login.");
     check(el("settings-panel").hidden, "Sign-out left settings open.");
-    check(localStorage.getItem(serverUrlKey) === "http://server.example:8000", "Sign-out removed the saved server URL.");
+    check(localStorage.getItem(serverUrlKey) === "http://old.example", "Sign-out changed the legacy server URL.");
     check(localStorage.getItem(usernameKey) === "alice", "Sign-out removed the saved username.");
     check(localStorage.getItem(autoShuffleKey) === "true", "Sign-out removed the auto shuffle setting.");
     check(localStorage.getItem(visualizerKey) === "wave", "Sign-out removed the visualizer setting.");
@@ -1220,11 +1304,13 @@ frame.addEventListener("load", async () => {
       return originalSetItem.call(this, key, value);
     };
     el("username").value = "bob";
+    el("username").dispatchEvent(new w.Event("input", {bubbles: true}));
+    check(el("status").textContent.includes("username cannot be remembered"), "Username storage failure while editing was not reported.");
     el("password").value = "secret";
     el("login-form").requestSubmit();
     await wait(() => !el("library").hidden);
     check(el("status").textContent.includes("username could not be saved") &&
-      localStorage.getItem(usernameKey) === "alice" && localStorage.getItem(serverUrlKey) === "http://server.example:8000",
+      localStorage.getItem(usernameKey) === "alice" && localStorage.getItem(serverUrlKey) === "http://old.example",
       "A username storage failure was not reported independently.");
     el("signout").click();
     w.Storage.prototype.setItem = originalSetItem;
@@ -1242,7 +1328,7 @@ frame.addEventListener("load", async () => {
     el("password").value = "secret";
     el("login-form").requestSubmit();
     await wait(() => !el("library").hidden);
-    check(el("status").textContent.includes("server URL and username could not be saved"), "Storage failure was not reported.");
+    check(el("status").textContent.includes("username could not be saved"), "Storage failure was not reported.");
     el("open-settings").click();
     el("visualizer-mode").value = "bars";
     el("visualizer-mode").dispatchEvent(new w.Event("change"));

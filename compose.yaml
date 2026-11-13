@@ -2,6 +2,8 @@ services:
   bragi-browser:
     build: .
     image: bragi-browser:local
+    environment:
+      BRAGI_SERVER_URL: "${BRAGI_SERVER_URL:?Set BRAGI_SERVER_URL to the browser-accessible BragiServer URL}"
     ports:
       - "8765:80"
     restart: unless-stopped

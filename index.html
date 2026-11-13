@@ -26,13 +26,11 @@
       <h1>Sign in to Bragi</h1>
       <p>Connect to your BragiServer account to see your playlists.</p>
       <form id="login-form">
-        <label>Server URL <input id="server" type="url" required placeholder="http://server:8000" autocomplete="url"></label>
         <label>Username <input id="username" required autocomplete="username"></label>
-        <button id="edit-connection" type="button" aria-controls="server username">Lock connection details</button>
         <label>Password <input id="password" type="password" required autocomplete="current-password"></label>
         <button type="submit" id="login-button" class="primary">Connect</button>
       </form>
-      <p class="hint">HTTP is for testing only and exposes credentials to the network. Use HTTPS for production. The server URL and username are remembered in this browser; the password stays in memory until you sign out or close this page.</p>
+      <p class="hint">HTTP is for testing only and exposes credentials to the network. Use HTTPS for production. The username is remembered in this browser; the password stays in memory until you sign out or close this page.</p>
     </section>
 
     <section id="settings-panel" class="settings-card" aria-labelledby="settings-heading" hidden>

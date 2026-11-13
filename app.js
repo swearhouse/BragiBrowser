@@ -1,7 +1,6 @@
 "use strict";
 
 const $ = id => document.getElementById(id);
-const serverUrlKey = "bragi.serverUrl";
 const usernameKey = "bragi.username";
 const autoShuffleKey = "bragi.autoShuffle";
 const visualizerKey = "bragi.visualizer";
@@ -203,16 +202,8 @@ function syncVisualizer() {
   if (!visualizer.frame) visualizer.frame = requestAnimationFrame(drawVisualizer);
 }
 try {
-  const savedServerUrl = localStorage.getItem(serverUrlKey);
-  if (savedServerUrl) {
-    $("server").value = savedServerUrl;
-    $("server").readOnly = true;
-  }
   const savedUsername = localStorage.getItem(usernameKey);
-  if (savedUsername) {
-    $("username").value = savedUsername;
-    $("username").readOnly = true;
-  }
+  if (savedUsername) $("username").value = savedUsername;
   const savedAutoShuffle = localStorage.getItem(autoShuffleKey);
   if (savedAutoShuffle === "true" || savedAutoShuffle === "false") $("auto-shuffle").checked = savedAutoShuffle === "true";
   else if (savedAutoShuffle !== null) message("The saved auto shuffle setting is invalid; auto shuffle is off.");
@@ -220,19 +211,19 @@ try {
   if (["bars", "mirrored", "radial", "wave", "off"].includes(savedVisualizer)) $("visualizer-mode").value = savedVisualizer;
   else if (savedVisualizer !== null) message("The saved visualizer setting is invalid; spectrum bars are selected.");
 } catch {
-  message("Browser storage is unavailable; the server URL, username, and settings cannot be remembered.");
+  message("Browser storage is unavailable; the username and settings cannot be remembered.");
 }
-function updateConnectionEditButton() {
-  const locked = $("server").readOnly || $("username").readOnly;
-  $("edit-connection").textContent = locked ? "Edit connection details" : "Lock connection details";
+let usernameSaveFailed = false;
+function rememberUsername(username) {
+  try {
+    localStorage.setItem(usernameKey, username);
+    usernameSaveFailed = false;
+  } catch {
+    usernameSaveFailed = true;
+    message("Browser storage is unavailable; the username cannot be remembered.");
+  }
 }
-updateConnectionEditButton();
-$("edit-connection").addEventListener("click", () => {
-  const lock = !$("server").readOnly && !$("username").readOnly;
-  $("server").readOnly = lock;
-  $("username").readOnly = lock;
-  updateConnectionEditButton();
-});
+$("username").addEventListener("input", () => rememberUsername($("username").value));
 function closeSettings() {
   $("settings-panel").hidden = true;
   $("login-panel").hidden = !!state.auth;
@@ -580,20 +571,42 @@ async function refreshPlaylists(auth = state.auth, signal) {
   }
   return result.playlists;
 }
+async function configuredServerBase() {
+  let value;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch(new URL("server-url.txt", document.baseURI), {
+      cache: "no-store", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", signal: controller.signal
+    });
+    if (!response.ok) throw new Error("Configuration request failed.");
+    value = (await response.text()).trim();
+  } catch {
+    throw new ApiError("Could not load the BragiServer configuration. Check the deployment's BRAGI_SERVER_URL.");
+  } finally {
+    clearTimeout(timer);
+  }
+  let base;
+  try { base = new URL(value); }
+  catch { throw new ApiError("Invalid BragiServer configuration. Set BRAGI_SERVER_URL to an HTTP or HTTPS URL."); }
+  if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.href.includes("?") || base.href.includes("#")) {
+    throw new ApiError("Invalid BragiServer configuration. Set BRAGI_SERVER_URL to an HTTP or HTTPS URL without credentials, query, or fragment.");
+  }
+  return base.href.replace(/\/+$/, "");
+}
 $("login-form").addEventListener("submit", async event => {
   event.preventDefault();
   $("login-button").disabled = true;
   try {
-    const base = new URL($("server").value.trim());
-    if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
-      throw new ApiError("Enter an HTTP or HTTPS server URL without credentials, query, or fragment.");
-    }
     const username = $("username").value;
+    rememberUsername(username);
     if (!username) throw new ApiError("Enter a username.");
     if (username.includes(":")) throw new ApiError("A Basic authentication username cannot contain a colon.");
-    const bytes = new TextEncoder().encode(username + ":" + $("password").value);
+    const password = $("password").value;
+    const base = await configuredServerBase();
+    const bytes = new TextEncoder().encode(username + ":" + password);
     const header = "Basic " + btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(""));
-    const auth = { base: base.href.replace(/\/+$/, ""), header };
+    const auth = { base, header };
     const playlists = await refreshPlaylists(auth);
     state.auth = auth;
     state.playlists = playlists;
@@ -602,13 +615,8 @@ $("login-form").addEventListener("submit", async event => {
     $("library").hidden = !$("settings-panel").hidden;
     $("signout").hidden = false;
     renderPlaylists();
-    const unsaved = [];
-    try { localStorage.setItem(serverUrlKey, auth.base); }
-    catch { unsaved.push("server URL"); }
-    try { localStorage.setItem(usernameKey, username); }
-    catch { unsaved.push("username"); }
-    message(unsaved.length ? `Connected, but the ${unsaved.join(" and ")} could not be saved in browser storage.` :
-      "Connected. Choose a playlist and output.");
+    message(!usernameSaveFailed ? "Connected. Choose a playlist and output." :
+      "Connected, but the username could not be saved in browser storage.");
   } catch (error) { reportError(error); }
   finally { $("login-button").disabled = false; }
 });
@@ -1317,7 +1325,7 @@ async function castCommand(command) {
       if (command === "stop") media.stop(new chrome.cast.media.StopRequest(), resolve, reject);
       else if (command === "next") media.queueNext(resolve, reject);
       else if (command === "previous") media.queuePrev(resolve, reject);
-      else if (["PLAYING", "BUFFERING"].includes(media.playerState)) media.pause(new chrome.cast.media.PauseRequest(), resolve, reject);
+      else if (command === "pause") media.pause(new chrome.cast.media.PauseRequest(), resolve, reject);
       else media.play(new chrome.cast.media.PlayRequest(), resolve, reject);
     });
     message("Playback command sent to receiver.");
@@ -1417,6 +1425,67 @@ function updateArtwork(source) {
   image.src = url;
 }
 
+const mediaActions = {
+  play: () => setPlayback(true),
+  pause: () => setPlayback(false),
+  stop: () => $("stop").click(),
+  previoustrack: () => $("previous").click(),
+  nexttrack: () => $("next").click(),
+  seekto: details => seekFromMediaSession(details.seekTime),
+  seekbackward: details => seekFromMediaSession(null, -(Number.isFinite(details.seekOffset) && details.seekOffset > 0 ? details.seekOffset : 10)),
+  seekforward: details => seekFromMediaSession(null, Number.isFinite(details.seekOffset) && details.seekOffset > 0 ? details.seekOffset : 10)
+};
+const mediaActionStates = {};
+let mediaMetadataKey = null;
+function syncMediaSession(hasMedia, playing, casting, media, duration, current, canSeek) {
+  const session = navigator.mediaSession;
+  if (!session) return;
+  const active = !!state.auth && hasMedia;
+  const castMetadata = casting && media && media.media && media.media.metadata;
+  const title = active ? (casting ? castMetadata && castMetadata.title : state.localTitle) || "Bragi" : "";
+  const album = active ? (casting ? castMetadata && castMetadata.albumName : state.localQueueSnapshot && state.localQueueSnapshot.name) || "" : "";
+  const images = castMetadata && castMetadata.images;
+  const artwork = active ? safeArtworkUrl(casting ? Array.isArray(images) && images[0] && images[0].url : state.localArtwork) : null;
+  const metadataKey = JSON.stringify([active, title, album, artwork]);
+  if (metadataKey !== mediaMetadataKey) {
+    session.metadata = active && typeof window.MediaMetadata === "function"
+      ? new MediaMetadata({title, album, artwork: artwork ? [{src: artwork}] : []}) : null;
+    mediaMetadataKey = metadataKey;
+  }
+  const playbackState = active ? playing ? "playing" : "paused" : "none";
+  if (session.playbackState !== playbackState) session.playbackState = playbackState;
+  const enabled = {
+    play: active && !$("play-pause").disabled,
+    pause: active && !$("play-pause").disabled,
+    stop: active && !$("stop").disabled,
+    previoustrack: active && !$("previous").disabled,
+    nexttrack: active && !$("next").disabled,
+    seekto: active && !$("seek").disabled,
+    seekbackward: active && !$("seek").disabled,
+    seekforward: active && !$("seek").disabled
+  };
+  for (const [action, handler] of Object.entries(mediaActions)) {
+    if (mediaActionStates[action] === "unsupported" || mediaActionStates[action] === enabled[action]) continue;
+    try {
+      session.setActionHandler(action, enabled[action] ? handler : null);
+      mediaActionStates[action] = enabled[action];
+    } catch (error) {
+      if (error.name !== "TypeError" && error.name !== "NotSupportedError") throw error;
+      mediaActionStates[action] = "unsupported";
+      log(`Media session action "${action}" is not supported by this browser.`);
+    }
+  }
+  if (typeof session.setPositionState === "function") {
+    if (active && canSeek && Number.isFinite(current)) {
+      const rate = casting ? 1 : $("audio").playbackRate;
+      session.setPositionState({
+        duration, position: Math.min(duration, Math.max(0, current)),
+        playbackRate: Number.isFinite(rate) && rate > 0 ? rate : 1
+      });
+    } else session.setPositionState();
+  }
+}
+
 $("player-artwork").addEventListener("load", () => {
   if (!$("player-artwork").hasAttribute("src")) return;
   $("player-artwork").hidden = false;
@@ -1490,6 +1559,7 @@ function updatePlayer() {
   $("mute-icon").textContent = muted ? "volume_off" : "volume_up";
   if (!state.volumeEditing && !state.volumePending) $("volume").value = String(Number.isFinite(volume) ? volume : 0);
   $("volume-value").textContent = casting && !Number.isFinite(volume) ? "—" : `${Math.round(Number($("volume").value) * 100)}%`;
+  syncMediaSession(hasMedia, playing, casting, media, duration, current, canSeek);
   syncVisualizer();
 }
 
@@ -1499,15 +1569,29 @@ function updatePlayer() {
 setInterval(updateCast, 1000);
 document.addEventListener("visibilitychange", syncVisualizer);
 
-$("play-pause").addEventListener("click", async () => {
-  if (state.castContext && state.castContext.getCurrentSession()) return castCommand("toggle");
+async function setPlayback(shouldPlay) {
+  if (!state.auth || $("play-pause").disabled) return;
+  const session = state.castContext && state.castContext.getCurrentSession();
+  if (session) {
+    const media = getCastMediaSession(session);
+    if (!media || media.playerState === "IDLE") return;
+    const playing = ["PLAYING", "BUFFERING"].includes(media.playerState);
+    if (playing !== shouldPlay) await castCommand(shouldPlay ? "play" : "pause");
+    return;
+  }
   const audio = $("audio");
-  if (audio.paused || audio.ended) {
+  if (shouldPlay && (audio.paused || audio.ended)) {
     prepareVisualizer();
     try { await audio.play(); }
     catch { message("Browser playback could not start. Try Play again or choose another track."); }
-  } else audio.pause();
+  } else if (!shouldPlay && !audio.paused) audio.pause();
   updatePlayer();
+}
+$("play-pause").addEventListener("click", () => {
+  const session = state.castContext && state.castContext.getCurrentSession();
+  const media = getCastMediaSession(session);
+  const playing = session ? !!media && ["PLAYING", "BUFFERING"].includes(media.playerState) : !$("audio").paused && !$("audio").ended;
+  return setPlayback(!playing);
 });
 $("stop").addEventListener("click", () => {
   if (state.castContext && state.castContext.getCurrentSession()) return castCommand("stop");
@@ -1523,18 +1607,19 @@ $("previous").addEventListener("click", () => {
   if (state.castContext && state.castContext.getCurrentSession()) return castCommand("previous");
   return advanceLocal(-1);
 });
-$("seek").addEventListener("input", () => {
+function currentSeekSelection() {
   const session = state.castContext && state.castContext.getCurrentSession();
   const casting = !!session;
   const media = getCastMediaSession(session);
-  state.seeking = { casting, target: casting ? media : $("audio").getAttribute("src"), track: casting ? media && media.currentItemId : state.localIndex };
+  return { casting, target: casting ? media : $("audio").getAttribute("src"), track: casting ? media && media.currentItemId : state.localIndex };
+}
+$("seek").addEventListener("input", () => {
+  state.seeking = currentSeekSelection();
   $("seek-current").textContent = formatTime(Number($("seek").value));
 });
-$("seek").addEventListener("change", async () => {
-  const selection = state.seeking;
-  state.seeking = null;
-  if (!selection || $("seek").disabled) return updatePlayer();
-  const time = Number($("seek").value);
+async function seekPlayback(time, selection) {
+  if (!selection || !state.auth || $("seek").disabled || !Number.isFinite(time)) return updatePlayer();
+  time = Math.min(Number($("seek").max), Math.max(0, time));
   if (selection.casting) {
     const session = state.castContext && state.castContext.getCurrentSession();
     const media = getCastMediaSession(session);
@@ -1548,6 +1633,17 @@ $("seek").addEventListener("change", async () => {
     catch { message("Could not seek local playback."); }
   }
   updatePlayer();
+}
+function seekFromMediaSession(time, offset = 0) {
+  if ($("seek").disabled) return;
+  const selection = currentSeekSelection();
+  const current = selection.casting && selection.target ? selection.target.getEstimatedTime() : $("audio").currentTime;
+  return seekPlayback(time === null ? current + offset : time, selection);
+}
+$("seek").addEventListener("change", () => {
+  const selection = state.seeking;
+  state.seeking = null;
+  return seekPlayback(Number($("seek").value), selection);
 });
 $("volume").addEventListener("input", () => {
   const session = state.castContext && state.castContext.getCurrentSession();
