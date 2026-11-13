@@ -9,7 +9,7 @@ const state = {
   auth: null, playlists: [], selectedPlaylistId: null, controller: null, generation: 0, busy: false,
   localQueue: [], localQueueSnapshot: null, localIndex: -1, localPlayingIndex: -1, localStarting: false, localTitle: "", localArtwork: null, artworkSource: null, artworkVersion: 0,
   castContext: null, castSession: null, castSessionVersion: 0, castMedia: null, castQueue: null, castLoading: false, preparingOutput: null,
-  displayedPlaylist: null, displayedIsQueue: false,
+  displayedPlaylist: null, displayedIsQueue: false, lastQueue: null,
   seeking: null, volumeEditing: null, volumePending: false,
   visualizerAccess: "unchecked", localHasPlayed: false, localDirectUrl: "", playlistController: null,
   editingPlaylistId: null, editingSong: null
@@ -239,6 +239,7 @@ function closeSettings() {
   $("library").hidden = !state.auth;
   $("open-settings").focus();
   syncVisualizer();
+  if (autoScrollTimer === null) centerCurrentTrack();
 }
 $("toggle-sidebar").addEventListener("click", () => {
   const sidebar = $("playlist-sidebar");
@@ -318,6 +319,8 @@ function stopLocal() {
   updatePlayer();
 }
 function signOut(text = "Signed out. Cast playback was not stopped.") {
+  clearTimeout(autoScrollTimer);
+  autoScrollTimer = null;
   if (state.playlistController) {
     state.playlistController.abort();
     state.playlistController = null;
@@ -341,6 +344,7 @@ function signOut(text = "Signed out. Cast playback was not stopped.") {
   state.auth = null;
   state.playlists = [];
   state.selectedPlaylistId = null;
+  state.lastQueue = null;
   if (!$("settings-panel").hidden) closeSettings();
   $("password").value = "";
   $("login-panel").hidden = false;
@@ -408,9 +412,34 @@ function requireQueue(result) {
   if (!result || !result.queue || !Array.isArray(result.queue.videos)) throw new ApiError("The server returned an invalid queue.");
   return result.queue;
 }
+const userScrollPauseMs = 5000;
+let autoScrollTimer = null;
+function centerCurrentTrack() {
+  clearTimeout(autoScrollTimer);
+  autoScrollTimer = null;
+  const list = $("tracks");
+  const button = list.querySelector('.track-button[aria-current="true"]');
+  if (!button || button.parentElement.hidden || !list.getClientRects().length) return;
+  const listRect = list.getBoundingClientRect();
+  const buttonRect = button.getBoundingClientRect();
+  const offset = buttonRect.top - listRect.top - list.clientTop + list.scrollTop;
+  list.scrollTo({
+    top: Math.max(0, offset - (list.clientHeight - buttonRect.height) / 2),
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"
+  });
+}
+function pauseAutoScroll() {
+  clearTimeout(autoScrollTimer);
+  autoScrollTimer = setTimeout(centerCurrentTrack, userScrollPauseMs);
+}
+["wheel", "touchmove", "pointerdown", "keydown"].forEach(type => {
+  $("tracks").addEventListener(type, pauseAutoScroll, { passive: true });
+});
 function filterTracks() {
   const playlist = state.displayedPlaylist;
   const query = $("track-search").value.trim().toLocaleLowerCase();
+  const current = $("tracks").querySelector('.track-button[aria-current="true"]');
+  const wasHidden = current && current.parentElement.hidden;
   let matches = 0;
   $("tracks").querySelectorAll("li").forEach((item, index) => {
     item.hidden = !playlist.videos[index].name.toLocaleLowerCase().includes(query);
@@ -419,11 +448,14 @@ function filterTracks() {
   $("tracks-empty").hidden = matches > 0;
   $("tracks-empty").textContent = !playlist ? "Choose a playlist from your library." :
     !playlist.videos.length ? "This playlist has no tracks." : "No songs match your search.";
+  if (wasHidden && !current.parentElement.hidden && autoScrollTimer === null) centerCurrentTrack();
 }
 $("track-search").addEventListener("input", filterTracks);
 function showTracks(playlist, isQueue = false) {
   state.displayedPlaylist = playlist;
   state.displayedIsQueue = isQueue;
+  $("toggle-track-view").hidden = !state.lastQueue;
+  $("toggle-track-view").textContent = isQueue ? "Show saved playlist" : "Show playback queue";
   $("playlist-display-name").textContent = playlist ? playlist.name : "No playlist selected";
   $("playlist-summary").textContent = playlist
     ? ` - (${playlist.videos.length} ${playlist.videos.length === 1 ? "song" : "songs"})${isQueue ? " · server queue" : ""}` : "";
@@ -442,6 +474,8 @@ function showTracks(playlist, isQueue = false) {
     button.setAttribute("aria-label", `Play ${video.name}, track ${index + 1}`);
     button.disabled = state.busy || state.castLoading;
     button.addEventListener("click", () => {
+      clearTimeout(autoScrollTimer);
+      autoScrollTimer = null;
       if (isQueue) {
         startPlayback(null, { queueId: playlist.id, index });
       } else {
@@ -470,6 +504,13 @@ function showTracks(playlist, isQueue = false) {
   filterTracks();
   updateTrackHighlight();
 }
+$("toggle-track-view").addEventListener("click", () => {
+  if (state.displayedIsQueue) {
+    showTracks(state.playlists.find(playlist => playlist.id === state.selectedPlaylistId) || null);
+  } else if (state.lastQueue) {
+    showTracks(state.lastQueue, true);
+  }
+});
 function updateTrackHighlight() {
   const displayed = state.displayedPlaylist;
   const session = state.castContext && state.castContext.getCurrentSession();
@@ -500,10 +541,15 @@ function updateTrackHighlight() {
       highlighted = displayed.videos.findIndex(video => matches(video) && ++found === occurrence);
     }
   }
+  let changed = false;
   $("tracks").querySelectorAll(".track-button").forEach((button, i) => {
-    if (i === highlighted && !button.hasAttribute("aria-current")) button.setAttribute("aria-current", "true");
+    if (i === highlighted && !button.hasAttribute("aria-current")) {
+      button.setAttribute("aria-current", "true");
+      changed = true;
+    }
     else if (i !== highlighted && button.hasAttribute("aria-current")) button.removeAttribute("aria-current");
   });
+  if (changed && autoScrollTimer === null) centerCurrentTrack();
 }
 function renderPlaylists() {
   const container = $("playlists");
@@ -1000,7 +1046,9 @@ async function startPlayback(playlistId = null, selection = null) {
       if (startIndex < 0) throw new ApiError("The selected track is no longer in the playlist. Refresh and try again.");
     }
     $("queue-status").textContent = `Server queue: ${queue.name} (${queue.videos.length} tracks${queue.shuffled ? ", shuffled" : ""}).`;
-    showTracks(queue, true);
+    state.lastQueue = queue;
+    if (state.displayedIsQueue) showTracks(queue, true);
+    else $("toggle-track-view").hidden = false;
     if (output === "local") {
       stopLocal();
       state.localQueue = queue.videos;

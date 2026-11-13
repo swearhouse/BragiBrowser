@@ -55,7 +55,10 @@ Select a playlist in the sidebar to inspect its tracks, then press **Play
 playlist** in the sidebar, or select a track to start there and continue
 through the rest of the queue. Use **Search songs** above the track list to
 filter the displayed playlist or queue by title; its heading shows the total
-song count, and playback queues are unchanged.
+song count. The saved playlist stays visible and editable during playback.
+Use **Show playback queue** to inspect the queue and **Show saved playlist**
+to return to the selected playlist. Playlist edits affect new queues, not
+the current playback queue.
 Enable **Auto shuffle** in **Settings** to shuffle
 new queues automatically; it is off by default and does not change existing
 queues. With auto shuffle enabled, the server shuffles first
@@ -73,7 +76,9 @@ Reorder tracks in BragiServer.
 
 The current track is highlighted when it can be matched to the displayed
 playlist or queue, including while paused. Cast highlighting depends on the
-receiver reporting this client's queue metadata.
+receiver reporting this client's queue metadata. The list scrolls to center
+the current track; after manual scrolling it waits five seconds before
+centering again. Tracks hidden by search are not scrolled into view.
 
 For Chromecast, use a supported Cast-enabled browser in a secure context and
 allow the Cast SDK to load from Google. Connect using the Cast button and

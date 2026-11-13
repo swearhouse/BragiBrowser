@@ -60,7 +60,7 @@
         <div id="playlists" class="playlist-list"></div>
         <button id="play-selected" class="button-with-icon" type="button" disabled><span class="material-symbols-outlined" aria-hidden="true">play_arrow</span><span>Play playlist</span></button>
         <button id="add-song" class="button-with-icon" type="button" disabled><span class="material-symbols-outlined" aria-hidden="true">add</span><span>Add song</span></button>
-        <p class="sidebar-note">Select a saved playlist to edit songs.</p>
+        <p class="sidebar-note">Playlist edits apply to new queues, not the current playback queue.</p>
       </aside>
       <div class="workspace">
         <section class="player-card" aria-label="Playback controls">
@@ -97,6 +97,7 @@
         </section>
         <section class="queue-card" aria-labelledby="playlist-heading">
           <div class="queue-heading"><h2 id="playlist-heading">Playlist</h2><span id="playlist-title"><span id="playlist-display-name">No playlist selected</span><span id="playlist-summary"></span></span></div>
+          <button id="toggle-track-view" type="button" aria-controls="tracks" hidden>Show playback queue</button>
           <label class="visually-hidden" for="track-search">Search playlist songs</label>
           <input id="track-search" type="search" placeholder="Search songs" autocomplete="off">
           <ol id="tracks" aria-label="Playlist tracks"></ol>

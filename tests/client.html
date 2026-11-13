@@ -431,8 +431,68 @@ frame.addEventListener("load", async () => {
     el("play-selected").click();
     await wait(() => el("queue-status").textContent.includes("(1 of 3)"));
     await wait(() => !el("play-selected").disabled);
+    check(el("playlist-title").textContent === "Mix - (3 songs)" &&
+      d.querySelectorAll(".edit-song").length === 3 && !d.querySelector(".edit-song").disabled,
+      "Starting browser playback did not keep the saved playlist editable.");
+    frame.hidden = false;
+    const trackList = el("tracks");
+    const originalMaxHeight = trackList.style.maxHeight;
+    const originalMatchMedia = w.matchMedia;
+    trackList.style.maxHeight = "70px";
+    w.matchMedia = query => query === "(prefers-reduced-motion: reduce)" ? {matches: true} : originalMatchMedia.call(w, query);
+    w.eval("state.localPlayingIndex = 1; updatePlayer()");
+    const centered = d.querySelectorAll(".track-button")[1].getBoundingClientRect();
+    const listBounds = trackList.getBoundingClientRect();
+    check(Math.abs((centered.top + centered.bottom) / 2 - (listBounds.top + listBounds.bottom) / 2) <= 1,
+      "The current track was not centered in the track list.");
+    let resumeScroll, pauseDelay, pendingTimer;
+    const originalClearTimeout = w.clearTimeout;
+    const cancelledTimers = [];
+    w.clearTimeout = id => { cancelledTimers.push(id); originalClearTimeout(id); };
+    w.setTimeout = (callback, delay, ...args) => {
+      if (delay === 5000) {
+        resumeScroll = callback;
+        pauseDelay = delay;
+        pendingTimer = originalSetTimeout(() => {}, 60000);
+        return pendingTimer;
+      }
+      return originalSetTimeout(callback, delay, ...args);
+    };
+    trackList.dispatchEvent(new w.WheelEvent("wheel", {bubbles: true, deltaY: 10}));
+    trackList.scrollTop = 0;
+    w.eval("state.localPlayingIndex = 2; updatePlayer(); updatePlayer()");
+    check(pauseDelay === 5000 && trackList.scrollTop === 0,
+      "A track change or repeated player update interrupted manual scrolling.");
+    const firstTimer = pendingTimer;
+    trackList.dispatchEvent(new w.Event("touchmove", {bubbles: true}));
+    check(pendingTimer !== firstTimer && cancelledTimers.includes(firstTimer), "Further manual scrolling did not restart the wait.");
+    const touchTimer = pendingTimer;
+    trackList.dispatchEvent(new w.Event("pointerdown", {bubbles: true}));
+    check(pendingTimer !== touchTimer && cancelledTimers.includes(touchTimer), "Pointer interaction did not restart the wait.");
+    resumeScroll();
+    check(trackList.scrollTop === trackList.scrollHeight - trackList.clientHeight,
+      "The latest current track was not centered after the manual-scroll wait.");
+    const originalScrollTo = trackList.scrollTo;
+    let scrollCalls = 0;
+    trackList.scrollTo = function(...args) { scrollCalls++; return originalScrollTo.apply(this, args); };
+    searchTracks("bad");
+    trackList.dispatchEvent(new w.Event("keydown", {bubbles: true}));
+    resumeScroll();
+    check(scrollCalls === 0, "A search-hidden current track was scrolled into view.");
+    searchTracks("");
+    check(scrollCalls === 1, "The current track was not centered when search revealed it.");
+    trackList.scrollTo = originalScrollTo;
+    w.setTimeout = originalSetTimeout;
+    w.clearTimeout = originalClearTimeout;
+    w.eval("state.localPlayingIndex = 0; updatePlayer()");
+    w.matchMedia = originalMatchMedia;
+    trackList.style.maxHeight = originalMaxHeight;
+    frame.hidden = true;
+    el("toggle-track-view").click();
     check(el("playlist-title").textContent === "Mix - (3 songs) · server queue", "Queue count or label was not displayed.");
     check(d.querySelectorAll(".edit-song").length === 0, "A playback queue exposed song editing buttons.");
+    el("toggle-track-view").click();
+    check(d.querySelectorAll(".edit-song").length === 3, "Returning from the queue did not restore playlist editing.");
     check(!currentQueue.shuffled, "Disabled auto shuffle created a shuffled queue.");
     check(el("player-title").textContent === "One", "Local track was not displayed for local output.");
     check(d.querySelectorAll(".track-button[aria-current=true]").length === 1 &&
@@ -641,6 +701,7 @@ frame.addEventListener("load", async () => {
     el("auto-shuffle").checked = false;
     el("auto-shuffle").dispatchEvent(new w.Event("change"));
     el("close-settings").click();
+    el("toggle-track-view").click();
     const postCount = requests.filter(r => r.path.endsWith("/queue") && r.method === "POST").length;
     d.querySelectorAll(".track-button")[1].click();
     await wait(() => el("queue-status").textContent.includes("(2 of 3)"));
@@ -918,6 +979,12 @@ frame.addEventListener("load", async () => {
     el("play-selected").click();
     await wait(() => loads === 1);
     await wait(() => !el("play-selected").disabled);
+    check(d.querySelectorAll(".edit-song").length === 3 && !d.querySelector(".edit-song").disabled,
+      "Starting Cast playback did not keep the saved playlist editable.");
+    d.querySelector(".edit-song").click();
+    check(el("edit-song-dialog").open && media.items.length === 3,
+      "The song editor was unavailable during Cast playback.");
+    el("edit-song-cancel").click();
     check(lastLoad.queueData.startIndex === 0, "Default Cast playback did not start at the first track.");
     check(lastLoad.queueData.items[0].media.url.includes("/api/v1/cast-stream/0?token=") &&
       requests.filter(r => r.path.endsWith("/audio-proxy")).length === proxiesBeforeCast &&
@@ -925,6 +992,9 @@ frame.addEventListener("load", async () => {
       media.items.length === 3, "Cast playback resolved songs before sending the queue.");
     frameworkMediaAvailable = false;
     otherMediaSessions = [{playerState: "IDLE"}];
+    frame.hidden = false;
+    trackList.style.maxHeight = "70px";
+    w.matchMedia = query => query === "(prefers-reduced-motion: reduce)" ? {matches: true} : originalMatchMedia.call(w, query);
     media.currentItemId = media.items[1].itemId;
     media.media = media.items[1].media;
     media.media.duration = 200;
@@ -932,6 +1002,13 @@ frame.addEventListener("load", async () => {
     check(el("player-title").textContent === videos[1].name && !el("play-pause").disabled &&
       !el("next").disabled && d.querySelectorAll(".track-button")[1].getAttribute("aria-current") === "true",
       "A playing media session was lost after the framework stopped reporting it.");
+    const castTrack = d.querySelectorAll(".track-button")[1].getBoundingClientRect();
+    const castList = trackList.getBoundingClientRect();
+    check(Math.abs((castTrack.top + castTrack.bottom) / 2 - (castList.top + castList.bottom) / 2) <= 1,
+      "A Cast track change did not center the current track.");
+    trackList.style.maxHeight = originalMaxHeight;
+    w.matchMedia = originalMatchMedia;
+    frame.hidden = true;
     remoteCommand = "";
     el("play-pause").click();
     await wait(() => remoteCommand === "pause");
@@ -1188,6 +1265,21 @@ frame.addEventListener("load", async () => {
     const playingSource = audio.src;
     const createRequests = () => requests.filter(r => r.path.endsWith("/playlists") && r.method === "POST");
     const queueRequests = requests.filter(r => r.path.endsWith("/queue")).length;
+    d.querySelector(".edit-song").click();
+    el("edit-song-url").value = "https://youtu.be/zyxwvutsrqp";
+    el("edit-song-form").requestSubmit();
+    await wait(() => !el("edit-song-dialog").open);
+    check(d.querySelector(".track-button").textContent === "Replacement title" &&
+      el("status").textContent.includes("Existing playback queues are unchanged") &&
+      !localPaused && audio.src === playingSource &&
+      requests.filter(r => r.path.endsWith("/queue")).length === queueRequests,
+      "Editing the playing playlist changed playback or failed to update the saved playlist.");
+    el("toggle-track-view").click();
+    check(d.querySelector(".track-button").textContent === "One" &&
+      d.querySelectorAll(".track-button").length === 3, "Editing a playlist changed the playback queue snapshot.");
+    el("toggle-track-view").click();
+    check(d.querySelector(".track-button").textContent === "Replacement title",
+      "Returning to the saved playlist lost the edit.");
     el("new-playlist").click();
     check(el("playlist-dialog").open, "New playlist dialog did not open.");
     el("playlist-name").value = "   ";
@@ -1236,6 +1328,16 @@ frame.addEventListener("load", async () => {
       requests.filter(r => r.path.endsWith("/queue")).length === queueRequests, "Rename changed tracks or playback.");
     check(requests.some(r => r.path.endsWith("/playlists/p") && r.method === "PATCH" &&
       JSON.parse(r.body).name === "Renamed mix"), "Rename request was not sent correctly.");
+    allowReplace = true;
+    d.querySelectorAll(".edit-song")[2].click();
+    el("edit-song-delete").click();
+    await wait(() => !el("edit-song-dialog").open);
+    check(d.querySelectorAll(".track-button").length === 2 && !localPaused && audio.src === playingSource &&
+      requests.filter(r => r.path.endsWith("/queue")).length === queueRequests,
+      "Removing a song from the playing playlist changed playback.");
+    el("toggle-track-view").click();
+    check(d.querySelectorAll(".track-button").length === 3, "Removing a song changed the playback queue snapshot.");
+    el("toggle-track-view").click();
     el("edit-playlist").click();
     allowReplace = false;
     el("playlist-delete").click();
