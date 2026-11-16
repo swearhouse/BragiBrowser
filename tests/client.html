@@ -76,6 +76,7 @@ frame.addEventListener("load", async () => {
   let finishAddSong;
   let finishRemoveSong;
   let finishReplaceSong;
+  let finishQueueResolve;
   let castBatchSize = 16;
   let currentQueue = queue;
   let configuredServerUrl = "https://server.example";
@@ -199,6 +200,11 @@ frame.addEventListener("load", async () => {
       return json({token: "A".repeat(43), expires_in: 604800, batch_size: castBatchSize});
     }
     if (path.endsWith("/resolve")) {
+      if (mode === "queue-resolve-delay") {
+        return new Promise(resolve => {
+          finishQueueResolve = () => resolve(json({audio: {url: "https://media.example/signed-secret", title: "One", content_type: "audio/mp4"}}));
+        });
+      }
       if (mode === "delay") {
         resolveEntered = true;
         return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => {
@@ -463,9 +469,40 @@ frame.addEventListener("load", async () => {
     searchTracks("");
     check(visibleTracks().length === 3 && el("tracks-empty").hidden, "Clearing search did not restore all songs.");
 
+    const firstMenu = d.querySelector(".track-menu");
+    check(firstMenu && [...firstMenu.querySelectorAll("button")].map(button => button.textContent).join(",") ===
+      "Queue,Open in YouTube,Edit,Delete", "Song actions menu is missing or out of order.");
+    firstMenu.querySelector("summary").click();
+    check(firstMenu.open, "Song actions did not open.");
+    d.dispatchEvent(new w.KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+    check(!firstMenu.open, "Escape did not close the song actions.");
+    d.activeElement.blur();
+    firstMenu.querySelector(".queue-song").click();
+    check(el("status").textContent.includes("Start browser playback"), "Queuing without playback was not explained.");
+    let openedLink;
+    const originalAnchorClick = w.HTMLAnchorElement.prototype.click;
+    w.HTMLAnchorElement.prototype.click = function() { openedLink = {href: this.href, target: this.target, rel: this.rel}; };
+    firstMenu.querySelector(".open-song").click();
+    w.HTMLAnchorElement.prototype.click = originalAnchorClick;
+    check(openedLink.href === videos[0].link && openedLink.target === "_blank" && openedLink.rel.includes("noopener"),
+      "Opening YouTube did not use a safe separate tab.");
+
     el("play-selected").click();
     await wait(() => el("queue-status").textContent.includes("(1 of 3)"));
     await wait(() => !el("play-selected").disabled);
+    const requestsBeforeQueuedTest = requests.length;
+    d.querySelectorAll(".queue-song")[2].click();
+    d.querySelectorAll(".queue-song")[1].click();
+    check(w.eval("state.localQueue.map(v => v.name).join(',')") === "One,One,Bad,Bad,One" &&
+      currentQueue.videos.length === 3, "Browser play-next did not preserve FIFO order or changed the server snapshot.");
+    el("next").click();
+    await wait(() => !el("next").disabled && el("queue-status").textContent.includes("(2 of 5)"));
+    d.querySelectorAll(".queue-song")[2].click();
+    check(w.eval("state.localQueue.map(v => v.name).join(',')") === "One,One,Bad,One,Bad,One",
+      "A song queued while a queued song played did not follow earlier selections.");
+    el("play-selected").click();
+    await wait(() => !el("play-selected").disabled && el("queue-status").textContent.includes("(1 of 3)"));
+    requests.length = requestsBeforeQueuedTest;
     check(mediaSession.metadata && mediaSession.metadata.title === "One" && mediaSession.metadata.album === "Mix" &&
       mediaSession.metadata.artwork[0].src === thumbnailUrl && mediaSession.playbackState === "playing" &&
       mediaSession.position.duration === 180 && mediaSession.position.position === 0 &&
@@ -1072,6 +1109,43 @@ frame.addEventListener("load", async () => {
       requests.filter(r => r.path.endsWith("/audio-proxy")).length === proxiesBeforeCast &&
       requests.filter(r => r.path.endsWith("/resolve")).length === resolvesBeforeCast &&
       media.items.length === 3, "Cast playback resolved songs before sending the queue.");
+    const originalCastItems = media.items.slice();
+    const originalCastId = media.currentItemId;
+    d.querySelectorAll(".queue-song")[1].click();
+    await wait(() => !el("play-selected").disabled && media.items.length === 4);
+    d.querySelectorAll(".queue-song")[2].click();
+    await wait(() => !el("play-selected").disabled && media.items.length === 5);
+    check(media.items.map(item => item.media.customData.bragiBrowser.index).join(",") === "0,1,0,1,2" &&
+      requests.filter(r => r.path.endsWith("/resolve")).length === resolvesBeforeCast,
+      "Cast play-next did not insert snapshot songs in FIFO order using Cast links.");
+    media.currentItemId = media.items[1].itemId;
+    media.media = media.items[1].media;
+    w.eval("state.playlists[0].videos.push({name: 'Outside', link: 'https://youtu.be/zyxwvutsrqp'}); showTracks(state.playlists[0])");
+    d.querySelectorAll(".queue-song")[3].click();
+    await wait(() => !el("play-selected").disabled && media.items.length === 6);
+    check(media.items[3].media.url === "https://media.example/signed-secret" &&
+      el("status").textContent.includes("may expire") && media.items[4] === originalCastItems[1],
+      "An outside Cast song was not inserted after existing next songs using a temporary URL.");
+    media.items = originalCastItems;
+    media.currentItemId = originalCastId;
+    media.media = media.items[0].media;
+    w.eval("showTracks(state.playlists[0]); updateCast()");
+    mode = "queue-resolve-delay";
+    d.querySelectorAll(".queue-song")[3].click();
+    await wait(() => typeof finishQueueResolve === "function");
+    media.currentItemId = media.items[1].itemId;
+    finishQueueResolve();
+    await wait(() => !el("play-selected").disabled);
+    check(el("status").textContent.includes("playback changed") && media.items.length === 3,
+      "A song was inserted after the receiver advanced during resolution.");
+    media.currentItemId = originalCastId;
+    mode = "insert-fail";
+    d.querySelectorAll(".queue-song")[1].click();
+    await wait(() => !el("play-selected").disabled);
+    check(el("status").textContent.includes("did not confirm") && media.items.length === 3,
+      "An unconfirmed Cast insertion was reported as successful or retried.");
+    mode = "normal";
+    w.eval("state.playlists[0].videos.pop(); showTracks(state.playlists[0]); updateCast()");
     frameworkMediaAvailable = false;
     otherMediaSessions = [{playerState: "IDLE"}];
     frame.hidden = false;
@@ -1512,6 +1586,8 @@ frame.addEventListener("load", async () => {
     const removeRequests = () => requests.filter(r => r.path.endsWith("/playlists/other/tracks") && r.method === "DELETE");
     check(d.querySelectorAll(".edit-song").length === 4, "Saved tracks did not have edit buttons.");
     allowReplace = false;
+    d.querySelectorAll(".delete-song")[2].click();
+    check(removeRequests().length === 0, "Cancelled menu deletion sent a request.");
     d.querySelectorAll(".edit-song")[2].click();
     check(el("edit-song-dialog").open && el("edit-song-url").value === "https://youtu.be/12345678901",
       "Edit did not open with the selected song URL.");
@@ -1522,8 +1598,7 @@ frame.addEventListener("load", async () => {
     mode = "remove-delay";
     searchTracks("fetched");
     check(visibleTracks().length === 3, "Search did not filter added songs.");
-    visibleTracks()[1].querySelector(".edit-song").click();
-    el("edit-song-delete").click();
+    visibleTracks()[1].querySelector(".delete-song").click();
     await wait(() => typeof finishRemoveSong === "function");
     check([...d.querySelectorAll(".edit-song")].every(button => button.disabled) &&
       el("edit-song-save").disabled && el("edit-song-delete").disabled && el("edit-song-cancel").disabled,

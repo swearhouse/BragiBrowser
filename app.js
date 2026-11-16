@@ -6,8 +6,8 @@ const autoShuffleKey = "bragi.autoShuffle";
 const visualizerKey = "bragi.visualizer";
 const state = {
   auth: null, playlists: [], selectedPlaylistId: null, controller: null, generation: 0, busy: false,
-  localQueue: [], localQueueSnapshot: null, localIndex: -1, localPlayingIndex: -1, localStarting: false, localTitle: "", localArtwork: null, artworkSource: null, artworkVersion: 0,
-  castContext: null, castSession: null, castSessionVersion: 0, castMedia: null, castQueue: null, castLoading: false, preparingOutput: null,
+  localQueue: [], localQueueOrigins: [], localQueueSnapshot: null, localIndex: -1, localPlayingIndex: -1, localStarting: false, localTitle: "", localArtwork: null, artworkSource: null, artworkVersion: 0,
+  castContext: null, castSession: null, castSessionVersion: 0, castMedia: null, castQueue: null, castToken: null, castLoading: false, preparingOutput: null,
   displayedPlaylist: null, displayedIsQueue: false, lastQueue: null,
   seeking: null, volumeEditing: null, volumePending: false,
   visualizerAccess: "unchecked", localHasPlayed: false, localDirectUrl: "", playlistController: null,
@@ -281,6 +281,12 @@ function setBusy(value) {
   document.querySelectorAll(".edit-song").forEach(button => {
     button.disabled = value || state.castLoading || !!state.playlistController;
   });
+  document.querySelectorAll(".delete-song").forEach(button => {
+    button.disabled = value || state.castLoading || !!state.playlistController;
+  });
+  document.querySelectorAll(".queue-song").forEach(button => {
+    button.disabled = value || state.castLoading;
+  });
   updatePlayer();
 }
 function cancelPreparation() {
@@ -298,6 +304,7 @@ function stopLocal() {
   audio.removeAttribute("src");
   audio.load();
   state.localQueue = [];
+  state.localQueueOrigins = [];
   state.localQueueSnapshot = null;
   state.localIndex = -1;
   state.localPlayingIndex = -1;
@@ -336,6 +343,8 @@ function signOut(text = "Signed out. Cast playback was not stopped.") {
   state.playlists = [];
   state.selectedPlaylistId = null;
   state.lastQueue = null;
+  state.castQueue = null;
+  state.castToken = null;
   if (!$("settings-panel").hidden) closeSettings();
   $("password").value = "";
   $("login-panel").hidden = false;
@@ -476,24 +485,78 @@ function showTracks(playlist, isQueue = false) {
     });
     item.append(button);
     if (!isQueue) {
-      const edit = document.createElement("button");
-      edit.type = "button";
-      edit.className = "edit-song icon-button";
-      edit.setAttribute("aria-label", `Edit ${video.name}, track ${index + 1}`);
-      edit.title = "Edit song";
-      edit.disabled = state.busy || state.castLoading || !!state.playlistController;
+      const menu = document.createElement("details");
+      menu.className = "track-menu";
+      const toggle = document.createElement("summary");
+      toggle.className = "icon-button";
+      toggle.setAttribute("aria-label", `Actions for ${video.name}, track ${index + 1}`);
+      toggle.title = "Song actions";
       const icon = document.createElement("span");
       icon.className = "material-symbols-outlined";
       icon.setAttribute("aria-hidden", "true");
-      icon.textContent = "edit";
-      edit.append(icon);
-      edit.addEventListener("click", () => openSongEditor(playlist, index));
-      item.append(edit);
+      icon.textContent = "menu";
+      toggle.append(icon);
+      const actions = document.createElement("div");
+      actions.className = "track-menu-actions";
+      const addAction = (label, className, handler) => {
+        const action = document.createElement("button");
+        action.type = "button";
+        action.className = className;
+        action.textContent = label;
+        action.addEventListener("click", () => {
+          menu.open = false;
+          handler();
+        });
+        actions.append(action);
+        return action;
+      };
+      const queue = addAction("Queue", "queue-song", () => queueNext(video));
+      queue.disabled = state.busy || state.castLoading;
+      addAction("Open in YouTube", "open-song", () => openYouTube(video));
+      const edit = addAction("Edit", "edit-song", () => openSongEditor(playlist, index));
+      const remove = addAction("Delete", "delete-song", () => deleteSong(playlist, index));
+      edit.disabled = remove.disabled = state.busy || state.castLoading || !!state.playlistController;
+      menu.append(toggle, actions);
+      toggle.addEventListener("click", () => {
+        if (!menu.open) document.querySelectorAll(".track-menu[open]").forEach(other => {
+          if (other !== menu) other.open = false;
+        });
+      });
+      item.append(menu);
     }
     $("tracks").append(item);
   });
   filterTracks();
   updateTrackHighlight();
+}
+document.addEventListener("click", event => {
+  if (!(event.target instanceof Element) || !event.target.closest(".track-menu")) {
+    document.querySelectorAll(".track-menu[open]").forEach(menu => { menu.open = false; });
+  }
+});
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  const menu = document.querySelector(".track-menu[open]");
+  if (menu) {
+    menu.open = false;
+    menu.querySelector("summary").focus();
+    event.preventDefault();
+  }
+});
+function openYouTube(video) {
+  let url;
+  try { url = new URL(video.link); }
+  catch { message("This song has an invalid YouTube URL."); return; }
+  if (url.protocol !== "https:" || url.username || url.password ||
+      !(url.hostname === "youtu.be" || url.hostname === "youtube.com" || url.hostname.endsWith(".youtube.com"))) {
+    message("This song has an invalid YouTube URL.");
+    return;
+  }
+  const link = document.createElement("a");
+  link.href = url.href;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.click();
 }
 $("toggle-track-view").addEventListener("click", () => {
   if (state.displayedIsQueue) {
@@ -518,7 +581,8 @@ function updateTrackHighlight() {
     }
   } else if (!session && $("audio").getAttribute("src")) {
     queue = state.localQueueSnapshot;
-    index = state.localPlayingIndex;
+    index = state.localQueueOrigins[state.localPlayingIndex];
+    if (!Number.isInteger(index)) index = -1;
   }
   let highlighted = -1;
   if (displayed && queue && index >= 0 && index < queue.videos.length) {
@@ -824,6 +888,13 @@ function openSongEditor(playlist, index) {
   $("edit-song-dialog").showModal();
   $("edit-song-url").focus();
 }
+function deleteSong(playlist, index) {
+  if (!state.auth || state.playlistController || state.busy || state.castLoading) return;
+  const videos = playlist.videos.map(video => ({name: video.name, link: video.link}));
+  if (!window.confirm(`Remove "${videos[index].name}" from this playlist?`)) return;
+  state.editingSong = {playlistId: playlist.id, index, videos};
+  changeSong("delete");
+}
 $("edit-song-cancel").addEventListener("click", () => $("edit-song-dialog").close());
 $("edit-song-dialog").addEventListener("close", () => {
   if (!$("edit-song-dialog").open) state.editingSong = null;
@@ -899,10 +970,13 @@ async function changeSong(action, url) {
         else message("Could not refresh the playlist. Reconnect and check it before retrying.");
       }
     } else {
-      $("edit-song-error").textContent = action === "replace" && error.status === 400 ? "Enter a valid HTTPS YouTube video URL." :
+      const text = action === "replace" && error.status === 400 ? "Enter a valid HTTPS YouTube video URL." :
         action === "replace" && error.status === 422 ? "Could not retrieve the YouTube video title. Check that the video is available and try again." :
         error.message || "Could not change the song.";
-      $("edit-song-error").hidden = false;
+      if ($("edit-song-dialog").open) {
+        $("edit-song-error").textContent = text;
+        $("edit-song-error").hidden = false;
+      } else message(text);
     }
   } finally {
     if (state.playlistController === controller) {
@@ -910,11 +984,12 @@ async function changeSong(action, url) {
       $("edit-song-save").disabled = false;
       $("edit-song-cancel").disabled = false;
       $("edit-song-delete").disabled = false;
+      if (!$("edit-song-dialog").open) state.editingSong = null;
       setBusy(state.busy);
     }
   }
 }
-async function resolveTrack(video, signal) {
+async function resolveTrack(video, signal, failure = "Skipped") {
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -930,7 +1005,7 @@ async function resolveTrack(video, signal) {
       lastError = error;
     }
   }
-  log(`Skipped “${video.name}” after 3 resolution attempts: ${lastError.message}`);
+  log(`${failure} “${video.name}” after 3 resolution attempts: ${lastError.message}`);
   return null;
 }
 function castQueueItems(queue, token, start, end) {
@@ -955,6 +1030,106 @@ async function insertCastItems(media, items, before) {
   const request = new chrome.cast.media.QueueInsertItemsRequest(items);
   if (before != null) request.insertBefore = before;
   await new Promise((resolve, reject) => media.queueInsertItems(request, resolve, reject));
+}
+async function queueNext(video) {
+  if (!state.auth || state.busy || state.castLoading) return;
+  const session = state.castContext && state.castContext.getCurrentSession();
+  if (!session) {
+    if (!$("audio").getAttribute("src") || !state.localQueue.length || state.localPlayingIndex < 0) {
+      message("Start browser playback before queuing a song.");
+      return;
+    }
+    let position = state.localIndex + 1;
+    while (position < state.localQueueOrigins.length && state.localQueueOrigins[position] === null) position++;
+    state.localQueue.splice(position, 0, video);
+    state.localQueueOrigins.splice(position, 0, null);
+    updatePlayer();
+    message(`Queued “${video.name}” to play next in this browser.`);
+    return;
+  }
+  const media = getCastMediaSession(session);
+  if (!media || media.playerState === "IDLE" || media.currentItemId == null) {
+    message("Start receiver playback before queuing a song.");
+    return;
+  }
+  const currentId = media.currentItemId;
+  const sessionVersion = state.castSessionVersion;
+  cancelPreparation();
+  const generation = state.generation;
+  const controller = new AbortController();
+  state.controller = controller;
+  state.preparingOutput = "cast";
+  setBusy(true);
+  try {
+    if (!Array.isArray(media.items) || !media.items.some(item => item.itemId === currentId)) {
+      throw new ApiError("The receiver did not provide its current queue. Cannot determine where to insert the song.");
+    }
+    const currentItem = Array.isArray(media.items) && media.items.find(item => item.itemId === currentId);
+    const data = currentItem && currentItem.media && currentItem.media.customData;
+    const marker = data && data.bragiBrowser;
+    const ownedQueue = state.castQueue && data && ((marker && marker.queueId === state.castQueue.id) ||
+      data.bragiBrowserNextQueue === state.castQueue.id);
+    const index = ownedQueue && state.castToken
+      ? state.castQueue.videos.findIndex(item => item.link === video.link) : -1;
+    let item;
+    let temporary = false;
+    if (index >= 0) {
+      item = castQueueItems(state.castQueue, state.castToken, index, index + 1)[0];
+    } else {
+      message(`Preparing “${video.name}” for the receiver…`);
+      const audio = await resolveTrack(video, controller.signal, "Could not queue");
+      if (!audio) throw new ApiError(`Could not resolve “${video.name}” for the receiver.`);
+      const info = new chrome.cast.media.MediaInfo(audio.url, audio.content_type);
+      const metadata = new chrome.cast.media.MusicTrackMediaMetadata();
+      metadata.title = video.name;
+      const thumbnail = trackArtwork(video);
+      if (thumbnail) metadata.images = [new chrome.cast.Image(thumbnail)];
+      info.metadata = metadata;
+      item = new chrome.cast.media.QueueItem(info);
+      item.autoplay = true;
+      temporary = true;
+    }
+    if (generation !== state.generation || controller.signal.aborted) return;
+    if (state.castContext.getCurrentSession() !== session || state.castSessionVersion !== sessionVersion ||
+        getCastMediaSession(session) !== media || media.currentItemId !== currentId) {
+      throw new ApiError("Receiver playback changed while preparing the song. Check its queue before trying again.");
+    }
+    if (!Array.isArray(media.items)) throw new ApiError("The receiver did not provide its queue. Cannot determine where to insert the song.");
+    const currentIndex = media.items.findIndex(entry => entry.itemId === currentId);
+    if (currentIndex < 0) throw new ApiError("The current receiver track is missing from its queue. Refresh the receiver before trying again.");
+    let next = currentIndex + 1;
+    while (next < media.items.length && media.items[next].media && media.items[next].media.customData &&
+           media.items[next].media.customData.bragiBrowserNext === true) next++;
+    const before = next < media.items.length ? media.items[next].itemId : null;
+    item.media.customData = {...item.media.customData, bragiBrowserNext: true,
+      ...(ownedQueue ? {bragiBrowserNextQueue: state.castQueue.id} : {})};
+    state.castLoading = true;
+    setBusy(true);
+    try { await insertCastItems(media, [item], before); }
+    catch { throw new ApiError("The receiver did not confirm the insertion. Check its queue before trying again."); }
+    finally { state.castLoading = false; }
+    if (generation !== state.generation || state.castContext.getCurrentSession() !== session ||
+        state.castSessionVersion !== sessionVersion || getCastMediaSession(session) !== media || media.currentItemId !== currentId) {
+      message("The receiver changed while inserting the song. Check its queue before trying again.");
+      return;
+    }
+    if (before != null && Array.isArray(media.items) && !media.items.some(entry => entry.itemId === before)) {
+      message("The receiver queue changed while inserting the song. Check its position before trying again.");
+      return;
+    }
+    message(temporary
+      ? `Queued “${video.name}” on the receiver. Its temporary link may expire before playback.`
+      : `Queued “${video.name}” to play next on the receiver.`);
+  } catch (error) {
+    if (generation === state.generation) reportError(error);
+  } finally {
+    if (state.controller === controller) {
+      state.controller = null;
+      state.preparingOutput = null;
+    }
+    if (generation === state.generation) setBusy(false);
+    else if (!state.castLoading) setBusy(state.busy);
+  }
 }
 function waitForCastMediaSession(session, sessionVersion, generation, signal, queueId, itemIndex) {
   return new Promise((resolve, reject) => {
@@ -1059,7 +1234,8 @@ async function startPlayback(playlistId = null, selection = null) {
     else $("toggle-track-view").hidden = false;
     if (output === "local") {
       stopLocal();
-      state.localQueue = queue.videos;
+      state.localQueue = queue.videos.slice();
+      state.localQueueOrigins = queue.videos.map((_, index) => index);
       state.localQueueSnapshot = queue;
       state.localIndex = startIndex - 1;
       await nextLocal(generation, controller.signal);
@@ -1111,6 +1287,7 @@ async function startPlayback(playlistId = null, selection = null) {
         throw new ApiError("The Cast session changed during loading; check the receiver before retrying.");
       }
       state.castQueue = queue;
+      state.castToken = prepared.token;
       stopLocal();
       updateCast();
       const media = await waitForCastMediaSession(
@@ -1280,6 +1457,7 @@ function updateCast() {
   if (session !== state.castSession) {
     state.castSessionVersion++;
     state.castQueue = null;
+    state.castToken = null;
     if (state.busy && !state.castLoading) {
       cancelPreparation();
       message("Cast session changed; preparation cancelled.");

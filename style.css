@@ -160,7 +160,13 @@ dialog::backdrop { background: #000a; }
 #tracks li { display: flex; align-items: center; min-width: 0; border-radius: 9px; }
 #tracks li:nth-child(odd) { background: #ffffff06; }
 .track-button { display: flex; flex: 1; align-items: center; gap: 12px; width: 100%; min-width: 0; border-color: transparent; background: transparent; color: #c7d0dc; font-weight: 500; text-align: left; overflow-wrap: anywhere; }
-.edit-song { flex: none; }
+.track-menu { flex: none; align-self: flex-start; }
+.track-menu summary { list-style: none; cursor: pointer; }
+.track-menu summary::-webkit-details-marker { display: none; }
+.track-menu summary:hover { background: #ffffff1a; }
+.track-menu-actions { display: grid; gap: 4px; padding: 0 4px 6px; }
+.track-menu-actions button { min-height: 34px; padding: .35rem .65rem; text-align: left; font-size: 12px; }
+.track-menu-actions .delete-song { color: #ffb4ad; }
 .track-button::before { width: 6ch; flex: none; color: #738195; content: attr(data-track-number); font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
 .track-button[aria-current=true] { border-color: #42695b; background: #233b32; color: var(--accent); }
 .track-button[aria-current=true] { border-color: color-mix(in srgb, var(--accent) 35%, #263028); background: color-mix(in srgb, var(--accent) 16%, #10151d); }

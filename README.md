@@ -90,9 +90,17 @@ sidebar to create an empty playlist. Select a playlist and use **Edit** to
 rename or delete it; deletion requires confirmation. These changes do not
 alter an existing playback queue. Select **Add song** and paste an HTTPS
 YouTube video link; the server fetches its title automatically. Added songs
-appear in new queues, not in an already playing queue. Use the edit button
-beside a song in a saved playlist to replace its YouTube link or delete it.
+appear in new queues, not in an already playing queue. Use the menu beside a
+song in a saved playlist to open it on YouTube, edit its link, or delete it.
 Deletion requires confirmation; both actions leave existing queues unchanged.
+The menu's **Queue** action adds songs after any previously queued songs and
+before the rest of the current playback queue. Start playback first. This
+changes browser playback or the connected receiver, not the saved playlist or
+shared server queue; **Show playback queue** still shows the server snapshot.
+For Cast, songs from this client's prepared snapshot use its on-demand links.
+Other songs use temporary resolved links that may expire before playback and
+may not be supported by the receiver. Check the receiver queue if a Cast
+insertion is not confirmed or playback changes during insertion.
 Reorder tracks in BragiServer.
 
 The current track is highlighted when it can be matched to the displayed
