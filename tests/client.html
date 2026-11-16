@@ -77,6 +77,9 @@ frame.addEventListener("load", async () => {
   let finishRemoveSong;
   let finishReplaceSong;
   let finishQueueResolve;
+  let deferredPrefetchUrl = null;
+  let finishPrefetch;
+  let prefetchCancelled = false;
   let castBatchSize = 16;
   let currentQueue = queue;
   let configuredServerUrl = "https://server.example";
@@ -200,6 +203,15 @@ frame.addEventListener("load", async () => {
       return json({token: "A".repeat(43), expires_in: 604800, batch_size: castBatchSize});
     }
     if (path.endsWith("/resolve")) {
+      if (deferredPrefetchUrl && JSON.parse(options.body).url === deferredPrefetchUrl) {
+        return new Promise((resolve, reject) => {
+          finishPrefetch = () => resolve(json({audio: {url: "https://media.example/signed-secret", title: "One", content_type: "audio/mp4"}}));
+          options.signal.addEventListener("abort", () => {
+            prefetchCancelled = true;
+            reject(new DOMException("Aborted", "AbortError"));
+          }, {once: true});
+        });
+      }
       if (mode === "queue-resolve-delay") {
         return new Promise(resolve => {
           finishQueueResolve = () => resolve(json({audio: {url: "https://media.example/signed-secret", title: "One", content_type: "audio/mp4"}}));
@@ -491,15 +503,77 @@ frame.addEventListener("load", async () => {
     await wait(() => el("queue-status").textContent.includes("(1 of 3)"));
     await wait(() => !el("play-selected").disabled);
     const requestsBeforeQueuedTest = requests.length;
+    deferredPrefetchUrl = videos[2].link;
     d.querySelectorAll(".queue-song")[2].click();
+    await wait(() => typeof finishPrefetch === "function");
     d.querySelectorAll(".queue-song")[1].click();
+    check(!prefetchCancelled, "Appending a later queued song cancelled the unchanged next track.");
     check(w.eval("state.localQueue.map(v => v.name).join(',')") === "One,One,Bad,Bad,One" &&
       currentQueue.videos.length === 3, "Browser play-next did not preserve FIFO order or changed the server snapshot.");
+    const resolveCountBeforeNext = requests.filter(r => r.path.endsWith("/resolve")).length;
     el("next").click();
+    check(el("play-selected").disabled, "Playback did not wait for the in-flight prefetch.");
+    deferredPrefetchUrl = null;
+    finishPrefetch();
     await wait(() => !el("next").disabled && el("queue-status").textContent.includes("(2 of 5)"));
+    check(requests.filter(r => r.path.endsWith("/resolve") && JSON.parse(r.body).url === videos[2].link).length ===
+      requests.slice(0, requestsBeforeQueuedTest).filter(r => r.path.endsWith("/resolve") && JSON.parse(r.body).url === videos[2].link).length + 1 &&
+      requests.filter(r => r.path.endsWith("/resolve")).length >= resolveCountBeforeNext,
+      "Playback did not reuse the in-flight prefetched result.");
     d.querySelectorAll(".queue-song")[2].click();
     check(w.eval("state.localQueue.map(v => v.name).join(',')") === "One,One,Bad,One,Bad,One",
       "A song queued while a queued song played did not follow earlier selections.");
+    deferredPrefetchUrl = videos[1].link;
+    finishPrefetch = null;
+    prefetchCancelled = false;
+    el("play-selected").click();
+    await wait(() => !el("play-selected").disabled && el("queue-status").textContent.includes("(1 of 3)"));
+    await wait(() => typeof finishPrefetch === "function");
+    d.querySelectorAll(".queue-song")[2].click();
+    check(prefetchCancelled, "Changing the next song did not cancel its in-flight prefetch.");
+    deferredPrefetchUrl = null;
+    el("play-selected").click();
+    await wait(() => !el("play-selected").disabled && el("queue-status").textContent.includes("(1 of 3)"));
+    el("visualizer-mode").value = "off";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    d.querySelectorAll(".queue-song")[2].click();
+    await w.eval("state.localPrefetch.promise");
+    const resolveBeforeExpired = requests.filter(r => r.path.endsWith("/resolve") && JSON.parse(r.body).url === videos[2].link).length;
+    const normalPlay = w.HTMLMediaElement.prototype.play;
+    let failedPrefetchedAudio = false;
+    let finishFailedPlay;
+    w.HTMLMediaElement.prototype.play = function() {
+      if (!failedPrefetchedAudio && w.eval("state.localUsingPrefetch")) {
+        failedPrefetchedAudio = true;
+        localError = {code: 4};
+        this.dispatchEvent(new w.Event("error"));
+        localError = null;
+        return new Promise((resolve, reject) => { finishFailedPlay = () => reject(new Error("Expired stream")); });
+      }
+      return normalPlay.call(this);
+    };
+    el("next").click();
+    await wait(() => failedPrefetchedAudio);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    check(el("play-selected").disabled, "The failed playback test did not hold preparation open.");
+    finishFailedPlay();
+    await wait(() => failedPrefetchedAudio && !el("play-selected").disabled &&
+      el("activity").textContent.includes("resolving it again"));
+    check(el("queue-status").textContent.includes("(2 of 4)") &&
+      requests.filter(r => r.path.endsWith("/resolve") && JSON.parse(r.body).url === videos[2].link).length === resolveBeforeExpired + 1,
+      "A failed prefetched stream was not freshly resolved and retried.");
+    w.HTMLMediaElement.prototype.play = normalPlay;
+    el("visualizer-mode").value = "bars";
+    el("visualizer-mode").dispatchEvent(new w.Event("change"));
+    deferredPrefetchUrl = videos[1].link;
+    finishPrefetch = null;
+    prefetchCancelled = false;
+    el("play-selected").click();
+    await wait(() => !el("play-selected").disabled && typeof finishPrefetch === "function");
+    el("stop").click();
+    check(prefetchCancelled && w.eval("state.localPrefetch === null"),
+      "Stopping playback did not cancel and discard the prefetch.");
+    deferredPrefetchUrl = null;
     el("play-selected").click();
     await wait(() => !el("play-selected").disabled && el("queue-status").textContent.includes("(1 of 3)"));
     requests.length = requestsBeforeQueuedTest;
@@ -752,10 +826,11 @@ frame.addEventListener("load", async () => {
     check(!audio.muted && audio.volume === 0.4 && el("volume-value").textContent === "40%" &&
       el("mute").getAttribute("aria-label") === "Mute", "Local unmute did not restore the previous volume.");
     mode = "proxy-failed";
+    const attemptsBeforeSkip = badAttempts;
     mediaHandlers.nexttrack({});
     await wait(() => el("queue-status").textContent.includes("(3 of 3)"));
     await wait(() => !el("play-selected").disabled);
-    check(badAttempts === 3, "A failed track should have exactly three resolution attempts.");
+    check(badAttempts === attemptsBeforeSkip + 3, "A failed track should have exactly three foreground resolution attempts.");
     check(mediaHandlers.nexttrack === null && typeof mediaHandlers.previoustrack === "function" &&
       mediaSession.metadata.artwork.length === 0, "Media Session did not update at the end of the queue.");
     check(audio.src === "https://media.example/signed-secret" && !audio.hasAttribute("crossorigin") && !localPaused &&
@@ -784,11 +859,12 @@ frame.addEventListener("load", async () => {
     searchTracks("one");
     check(visibleTracks().length === 2 && visibleTracks()[1].querySelector("[aria-current=true]"),
       "Filtering lost the second duplicate's highlight.");
+    const resolvesBeforeDuplicate = requests.filter(r => r.path.endsWith("/resolve")).length;
     visibleTracks()[1].querySelector(".track-button").click();
     await wait(() => el("queue-status").textContent.includes("(3 of 3)"));
     await wait(() => !el("play-selected").disabled);
     searchTracks("");
-    check(requests.filter(r => r.path.endsWith("/resolve")).length === 6, "Selected duplicate did not start directly.");
+    check(requests.filter(r => r.path.endsWith("/resolve")).length === resolvesBeforeDuplicate + 1, "Selected duplicate did not start directly.");
     check(!el("player-artwork").hasAttribute("src") && el("activity").textContent.includes("Invalid artwork URL"), "Unsafe artwork URL was not rejected.");
     videos[2].thumbnail_url = thirdThumbnailUrl;
     d.querySelector(".playlist-button").click();

@@ -130,10 +130,13 @@ available if the icon font cannot be loaded.
   a connected Cast receiver may also fetch it. The interface derives an accent
   from the current artwork when its host permits cross-origin image sampling;
   otherwise it uses the default accent.
-- For local playback, failed track resolution is attempted three times, then
-  skipped and recorded in the on-page activity list. Local playback resolves tracks as they
-  are reached. The browser may require pressing Play in the player
-  after asynchronous resolution; a media playback error skips the track.
+- For local playback, the next track is resolved in the background while the
+  current track plays. The temporary URL stays in memory and is discarded when
+  the next track changes, playback stops, or the Cast session changes. A failed
+  prefetch falls back to normal resolution; if prefetched audio fails before
+  starting, the client resolves it again once. Failed normal resolution is
+  attempted three times, then skipped and recorded in the activity list. The
+  browser may require pressing Play after asynchronous resolution.
 - The player controls a connected receiver, or the browser when no receiver is
   connected. Connecting or disconnecting does not transfer or stop existing
   playback. If browser playback continues after connecting, use **Stop browser

@@ -6,7 +6,7 @@ const autoShuffleKey = "bragi.autoShuffle";
 const visualizerKey = "bragi.visualizer";
 const state = {
   auth: null, playlists: [], selectedPlaylistId: null, controller: null, generation: 0, busy: false,
-  localQueue: [], localQueueOrigins: [], localQueueSnapshot: null, localIndex: -1, localPlayingIndex: -1, localStarting: false, localTitle: "", localArtwork: null, artworkSource: null, artworkVersion: 0,
+  localQueue: [], localQueueOrigins: [], localQueueSnapshot: null, localIndex: -1, localPlayingIndex: -1, localStarting: false, localTitle: "", localArtwork: null, localPrefetch: null, localUsingPrefetch: false, localRetry: null, artworkSource: null, artworkVersion: 0,
   castContext: null, castSession: null, castSessionVersion: 0, castMedia: null, castQueue: null, castToken: null, castLoading: false, preparingOutput: null,
   displayedPlaylist: null, displayedIsQueue: false, lastQueue: null,
   seeking: null, volumeEditing: null, volumePending: false,
@@ -288,6 +288,7 @@ function setBusy(value) {
     button.disabled = value || state.castLoading;
   });
   updatePlayer();
+  if (!value && state.localRetry) queueMicrotask(retryPrefetchedLocal);
 }
 function cancelPreparation() {
   state.generation++;
@@ -298,6 +299,7 @@ function cancelPreparation() {
   setBusy(false);
 }
 function stopLocal() {
+  cancelLocalPrefetch();
   stopVisualizer();
   const audio = $("audio");
   audio.pause();
@@ -314,6 +316,8 @@ function stopLocal() {
   state.visualizerAccess = "unchecked";
   state.localHasPlayed = false;
   state.localDirectUrl = "";
+  state.localUsingPrefetch = false;
+  state.localRetry = null;
   updatePlayer();
 }
 function signOut(text = "Signed out. Cast playback was not stopped.") {
@@ -989,17 +993,20 @@ async function changeSong(action, url) {
     }
   }
 }
+async function resolveAudio(video, signal) {
+  const result = await api("/resolve", { method: "POST", body: { url: video.link }, signal });
+  const audio = result && result.audio;
+  if (!audio || typeof audio.title !== "string" || !["audio/mp4", "audio/webm"].includes(audio.content_type)) throw new ApiError("Invalid audio response.");
+  let url;
+  try { url = new URL(audio.url); } catch { throw new ApiError("Invalid audio URL returned by server."); }
+  if (url.protocol !== "https:" || url.username || url.password) throw new ApiError("The server returned an unsafe audio URL.");
+  return audio;
+}
 async function resolveTrack(video, signal, failure = "Skipped") {
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const result = await api("/resolve", { method: "POST", body: { url: video.link }, signal });
-      const audio = result && result.audio;
-      if (!audio || typeof audio.title !== "string" || !["audio/mp4", "audio/webm"].includes(audio.content_type)) throw new ApiError("Invalid audio response.");
-      let url;
-      try { url = new URL(audio.url); } catch { throw new ApiError("Invalid audio URL returned by server."); }
-      if (url.protocol !== "https:" || url.username || url.password) throw new ApiError("The server returned an unsafe audio URL.");
-      return audio;
+      return await resolveAudio(video, signal);
     } catch (error) {
       if (error.name === "AbortError" || error.status === 401) throw error;
       lastError = error;
@@ -1007,6 +1014,52 @@ async function resolveTrack(video, signal, failure = "Skipped") {
   }
   log(`${failure} “${video.name}” after 3 resolution attempts: ${lastError.message}`);
   return null;
+}
+function cancelLocalPrefetch() {
+  const prefetch = state.localPrefetch;
+  state.localPrefetch = null;
+  if (prefetch) prefetch.controller.abort();
+}
+function prefetchNextLocal() {
+  const audio = $("audio");
+  const session = state.castContext && state.castContext.getCurrentSession();
+  const index = state.localPlayingIndex + 1;
+  const video = state.localQueue[index];
+  if (!state.auth || session || !audio.getAttribute("src") || audio.paused ||
+      state.localPlayingIndex < 0 || state.localPlayingIndex !== state.localIndex || !video) {
+    cancelLocalPrefetch();
+    return;
+  }
+  if (state.localPrefetch && state.localPrefetch.index === index &&
+      state.localPrefetch.video === video && state.localPrefetch.auth === state.auth) return;
+  cancelLocalPrefetch();
+  const controller = new AbortController();
+  const prefetch = {index, video, auth: state.auth, controller, promise: null};
+  state.localPrefetch = prefetch;
+  prefetch.promise = resolveAudio(video, controller.signal).catch(error => {
+    if (error.name !== "AbortError" && state.localPrefetch === prefetch) {
+      log(`Could not prefetch “${video.name}”; it will be resolved when needed.`);
+    }
+    return null;
+  });
+}
+async function takeLocalPrefetch(index, video, signal) {
+  const prefetch = state.localPrefetch;
+  if (!prefetch || prefetch.index !== index || prefetch.video !== video || prefetch.auth !== state.auth) {
+    cancelLocalPrefetch();
+    return null;
+  }
+  const abort = () => prefetch.controller.abort();
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, {once: true});
+  try {
+    const audio = await prefetch.promise;
+    if (signal.aborted || state.localPrefetch !== prefetch) return null;
+    state.localPrefetch = null;
+    return audio;
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
 }
 function castQueueItems(queue, token, start, end) {
   const items = [];
@@ -1043,6 +1096,7 @@ async function queueNext(video) {
     while (position < state.localQueueOrigins.length && state.localQueueOrigins[position] === null) position++;
     state.localQueue.splice(position, 0, video);
     state.localQueueOrigins.splice(position, 0, null);
+    prefetchNextLocal();
     updatePlayer();
     message(`Queued “${video.name}” to play next in this browser.`);
     return;
@@ -1180,6 +1234,7 @@ function waitForCastMediaSession(session, sessionVersion, generation, signal, qu
 }
 async function startPlayback(playlistId = null, selection = null) {
   if (state.busy || state.castLoading || !state.auth) return;
+  cancelLocalPrefetch();
   const session = state.castContext && state.castContext.getCurrentSession();
   const output = session ? "cast" : "local";
   if (output === "local") prepareVisualizer();
@@ -1340,7 +1395,10 @@ async function startPlayback(playlistId = null, selection = null) {
       state.controller = null;
       state.preparingOutput = null;
     }
-    if (generation === state.generation) setBusy(false);
+    if (generation === state.generation) {
+      setBusy(false);
+      prefetchNextLocal();
+    }
     else if (!state.castLoading) setBusy(state.busy);
   }
 }
@@ -1350,7 +1408,9 @@ async function nextLocal(generation, signal, direction = 1) {
     state.localIndex += direction;
     const video = state.localQueue[state.localIndex];
     message(`Resolving local track ${state.localIndex + 1} of ${state.localQueue.length}…`);
-    const audio = await resolveTrack(video, signal);
+    const prefetched = direction > 0 ? await takeLocalPrefetch(state.localIndex, video, signal) : null;
+    if (generation !== state.generation || signal.aborted) return;
+    const audio = prefetched || await resolveTrack(video, signal);
     if (generation !== state.generation) return;
     if (!audio) continue;
     const wantsVisualizer = $("visualizer-mode").value !== "off" && !visualizer.failure && !!visualizer.context;
@@ -1361,6 +1421,7 @@ async function nextLocal(generation, signal, direction = 1) {
     state.visualizerAccess = access;
     state.localHasPlayed = false;
     state.localDirectUrl = audio.url;
+    state.localUsingPrefetch = !!prefetched;
     if (access === "allowed") $("audio").crossOrigin = "anonymous";
     else $("audio").removeAttribute("crossorigin");
     $("audio").src = access === "allowed" ? proxyUrl : audio.url;
@@ -1393,6 +1454,7 @@ async function nextLocal(generation, signal, direction = 1) {
 }
 async function advanceLocal(direction = 1) {
   if (state.busy || !state.localQueue.length) return;
+  if (direction < 0) cancelLocalPrefetch();
   prepareVisualizer();
   cancelPreparation();
   const generation = state.generation;
@@ -1414,7 +1476,23 @@ $("play-selected").addEventListener("click", () => {
   if (state.selectedPlaylistId !== null) startPlayback(state.selectedPlaylistId);
 });
 $("audio").addEventListener("ended", () => advanceLocal());
-$("audio").addEventListener("playing", () => { state.localHasPlayed = true; syncVisualizer(); });
+$("audio").addEventListener("playing", () => {
+  state.localHasPlayed = true;
+  syncVisualizer();
+  prefetchNextLocal();
+});
+function retryPrefetchedLocal() {
+  const retry = state.localRetry;
+  if (!retry || state.busy) return;
+  state.localRetry = null;
+  if (retry.generation !== state.generation || retry.index !== state.localIndex ||
+      !state.localQueue.length || !state.localUsingPrefetch || state.localHasPlayed) return;
+  state.localUsingPrefetch = false;
+  cancelLocalPrefetch();
+  state.localIndex = retry.index - 1;
+  log(`Prefetched audio for “${state.localQueue[retry.index].name}” failed; resolving it again.`);
+  advanceLocal();
+}
 $("audio").addEventListener("error", () => {
   if (!state.localQueue.length || !$("audio").getAttribute("src") || !$("audio").error) return;
   const generation = state.generation;
@@ -1445,6 +1523,11 @@ $("audio").addEventListener("error", () => {
     });
     return;
   }
+  if (state.localUsingPrefetch && !state.localHasPlayed) {
+    state.localRetry = {generation, index};
+    setTimeout(retryPrefetchedLocal, 0);
+    return;
+  }
   setTimeout(() => {
     if (generation !== state.generation || index !== state.localIndex || !state.localQueue.length) return;
     log(`Playback failed for “${state.localQueue[index].name}”; skipping.`);
@@ -1455,6 +1538,7 @@ $("audio").addEventListener("error", () => {
 function updateCast() {
   const session = state.castContext && state.castContext.getCurrentSession();
   if (session !== state.castSession) {
+    cancelLocalPrefetch();
     state.castSessionVersion++;
     state.castQueue = null;
     state.castToken = null;
@@ -1469,6 +1553,7 @@ function updateCast() {
       state.castSession.removeEventListener(cast.framework.SessionEventType.VOLUME_CHANGED, updateCast);
     }
     state.castSession = session;
+    if (!session) prefetchNextLocal();
     if (session) {
       session.addEventListener(cast.framework.SessionEventType.MEDIA_SESSION, updateCast);
       session.addEventListener(cast.framework.SessionEventType.VOLUME_CHANGED, updateCast);
