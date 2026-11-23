@@ -160,6 +160,9 @@ dialog::backdrop { background: #000a; }
 #tracks li { display: flex; align-items: center; min-width: 0; border-radius: 9px; }
 #tracks li:nth-child(odd) { background: #ffffff06; }
 .track-button { display: flex; flex: 1; align-items: center; gap: 12px; width: 100%; min-width: 0; border-color: transparent; background: transparent; color: #c7d0dc; font-weight: 500; text-align: left; overflow-wrap: anywhere; }
+.track-thumb, .track-thumb-placeholder { width: 40px; height: 40px; flex: none; border-radius: 6px; object-fit: cover; background: #1b2430; }
+.track-thumb-placeholder { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); font-size: 16px; }
+.track-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .track-menu { flex: none; align-self: flex-start; }
 .track-menu summary { list-style: none; cursor: pointer; }
 .track-menu summary::-webkit-details-marker { display: none; }

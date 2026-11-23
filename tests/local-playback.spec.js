@@ -289,6 +289,22 @@ test("a paused Media Session can be reclaimed with the reclaim button", async ({
   await expect.poll(() => client.control("localPaused")).toBe(false);
 });
 
+test("track thumbnails setting can be toggled and renders thumbnails", async ({client}) => {
+  await client.login();
+  await client.selectPlaylist();
+  await expect(client.page.locator(".track-thumb, .track-thumb-placeholder")).toHaveCount(0);
+  await clickById(client, "open-settings");
+  await client.el("show-track-thumbs").check();
+  await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.trackThumbs"))).toBe("true");
+  await clickById(client, "close-settings");
+  await expect(client.page.locator(".track-thumb, .track-thumb-placeholder")).toHaveCount(3);
+  await expect(client.page.locator(".track-thumb").first()).toHaveAttribute("src", /artwork\.example/);
+  await clickById(client, "open-settings");
+  await client.el("show-track-thumbs").uncheck();
+  await clickById(client, "close-settings");
+  await expect(client.page.locator(".track-thumb, .track-thumb-placeholder")).toHaveCount(0);
+});
+
 test("an unsupported Media Session action does not block the remaining controls", async ({client}) => {
   await client.login();
   await client.selectPlaylist();

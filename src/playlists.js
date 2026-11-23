@@ -4,6 +4,7 @@ import { api, ApiError, refreshPlaylists } from "./api.js";
 import { reportError, setBusy } from "./shell.js";
 import { startPlayback } from "./localPlayback.js";
 import { queueNext, getCastMediaSession } from "./cast.js";
+import { safeArtworkUrl } from "./artwork.js";
 
 export const userScrollPauseMs = 5000;
 let highlightedButton = null;
@@ -66,10 +67,32 @@ export function showTracks(playlist, isQueue = false) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "track-button";
-    button.textContent = video.name;
     button.dataset.trackNumber = index + 1;
     button.setAttribute("aria-label", `Play ${video.name}, track ${index + 1}`);
     button.disabled = state.busy || state.castLoading;
+    if (state.trackThumbs) {
+      const thumbUrl = safeArtworkUrl(video.thumbnail_url);
+      if (thumbUrl) {
+        const img = document.createElement("img");
+        img.className = "track-thumb";
+        img.src = thumbUrl;
+        img.alt = "";
+        img.loading = "lazy";
+        img.referrerPolicy = "no-referrer";
+        img.addEventListener("error", () => { img.hidden = true; });
+        button.append(img);
+      } else {
+        const ph = document.createElement("span");
+        ph.className = "track-thumb-placeholder";
+        ph.setAttribute("aria-hidden", "true");
+        ph.textContent = "♪";
+        button.append(ph);
+      }
+    }
+    const name = document.createElement("span");
+    name.className = "track-name";
+    name.textContent = video.name;
+    button.append(name);
     item.append(button);
     if (!isQueue) {
       const menu = document.createElement("details");
