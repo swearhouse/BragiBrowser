@@ -7,6 +7,25 @@ import { updateTrackHighlight } from "./playlists.js";
 import { updateArtwork, syncMediaSession } from "./artwork.js";
 import { prepareVisualizer, syncVisualizer } from "./visualizer.js";
 
+const el = {
+  audio: $("audio"), outputStatus: $("output-status"), stopBrowser: $("stop-browser"), playerTitle: $("player-title"),
+  playPause: $("play-pause"), playPauseIcon: $("play-pause-icon"), stop: $("stop"), previous: $("previous"), next: $("next"),
+  seek: $("seek"), seekDuration: $("seek-duration"), seekCurrent: $("seek-current"), volume: $("volume"), mute: $("mute"),
+  muteIcon: $("mute-icon"), volumeValue: $("volume-value")
+};
+
+function setText(node, value) {
+  if (node.textContent !== value) node.textContent = value;
+}
+
+function setAttr(node, name, value) {
+  if (node.getAttribute(name) !== value) node.setAttribute(name, value);
+}
+
+function setFlag(node, property, value) {
+  if (node[property] !== value) node[property] = value;
+}
+
 export function formatTime(seconds) {
   const total = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
   const hours = Math.floor(total / 3600);
@@ -16,19 +35,19 @@ export function formatTime(seconds) {
 }
 
 export function updatePlayer() {
-  const audio = $("audio");
+  const audio = el.audio;
   const session = state.castContext && state.castContext.getCurrentSession();
   const casting = !!session;
   const media = getCastMediaSession(session);
   const hasLocal = !!audio.getAttribute("src") && state.localQueue.length > 0;
   const device = casting && session.getCastDevice();
-  $("output-status").textContent = casting ? (device && device.friendlyName || "Chromecast") : "This browser";
-  $("stop-browser").hidden = !casting || !hasLocal;
+  setText(el.outputStatus, casting ? (device && device.friendlyName || "Chromecast") : "This browser");
+  setFlag(el.stopBrowser, "hidden", !casting || !hasLocal);
   const hasMedia = casting ? !!media && media.playerState !== "IDLE" : hasLocal;
   updateTrackHighlight();
-  $("player-title").textContent = casting
+  setText(el.playerTitle, casting
     ? hasMedia && media.media && media.media.metadata && media.media.metadata.title || "No receiver track loaded."
-    : hasLocal ? state.localTitle : "No local track loaded.";
+    : hasLocal ? state.localTitle : "No local track loaded.");
   const images = casting && hasMedia && media.media && media.media.metadata && media.media.metadata.images;
   updateArtwork(casting ? (Array.isArray(images) && images[0] && images[0].url || null) : hasLocal ? state.localArtwork : null);
   const target = casting ? media : audio.getAttribute("src");
@@ -36,40 +55,47 @@ export function updatePlayer() {
   if (state.seeking && (state.seeking.casting !== casting || state.seeking.target !== target || state.seeking.track !== track)) state.seeking = null;
   if (state.volumeEditing && (state.volumeEditing.casting !== casting || state.volumeEditing.session !== session)) state.volumeEditing = null;
   const playing = hasMedia && (casting ? ["PLAYING", "BUFFERING"].includes(media.playerState) : !audio.paused && !audio.ended);
-  $("play-pause").disabled = !hasMedia || state.busy;
-  $("play-pause").setAttribute("aria-label", playing ? "Pause" : "Play");
-  $("play-pause").title = playing ? "Pause" : "Play";
-  $("play-pause-icon").textContent = playing ? "pause" : "play_arrow";
-  $("stop").disabled = !hasMedia || state.busy;
-  $("previous").disabled = state.busy || !hasMedia || (!casting && state.localIndex <= 0);
-  $("next").disabled = state.busy || !hasMedia || (!casting && state.localIndex >= state.localQueue.length - 1);
+  setFlag(el.playPause, "disabled", !hasMedia || state.busy);
+  setAttr(el.playPause, "aria-label", playing ? "Pause" : "Play");
+  setFlag(el.playPause, "title", playing ? "Pause" : "Play");
+  setText(el.playPauseIcon, playing ? "pause" : "play_arrow");
+  setFlag(el.stop, "disabled", !hasMedia || state.busy);
+  setFlag(el.previous, "disabled", state.busy || !hasMedia || (!casting && state.localIndex <= 0));
+  setFlag(el.next, "disabled", state.busy || !hasMedia || (!casting && state.localIndex >= state.localQueue.length - 1));
 
   const duration = hasMedia ? (casting ? media.media && media.media.duration : audio.duration) : 0;
   const current = hasMedia ? (casting ? media.getEstimatedTime() : audio.currentTime) : 0;
   const canSeek = hasMedia && Number.isFinite(duration) && duration > 0 &&
     (!casting || media.supportsCommand(chrome.cast.media.MediaCommand.SEEK));
-  $("seek").disabled = !canSeek || state.busy;
-  $("seek").max = String(canSeek ? duration : 0);
-  $("seek-duration").textContent = formatTime(duration);
-  if (!state.seeking) $("seek").value = String(canSeek && Number.isFinite(current) ? Math.min(duration, Math.max(0, current)) : 0);
-  $("seek-current").textContent = formatTime(Number($("seek").value));
+  setFlag(el.seek, "disabled", !canSeek || state.busy);
+  const max = String(canSeek ? duration : 0);
+  if (el.seek.max !== max) el.seek.max = max;
+  setText(el.seekDuration, formatTime(duration));
+  if (!state.seeking) {
+    const value = String(canSeek && Number.isFinite(current) ? Math.min(duration, Math.max(0, current)) : 0);
+    if (el.seek.value !== value) el.seek.value = value;
+  }
+  setText(el.seekCurrent, formatTime(Number(el.seek.value)));
 
   const volume = casting ? session && session.getVolume() : audio.volume;
   const muted = casting ? session.isMute() : audio.muted;
-  $("volume").disabled = state.volumePending || (casting && (!session || !Number.isFinite(volume)));
-  $("mute").disabled = state.volumePending || typeof muted !== "boolean";
+  setFlag(el.volume, "disabled", state.volumePending || (casting && (!session || !Number.isFinite(volume))));
+  setFlag(el.mute, "disabled", state.volumePending || typeof muted !== "boolean");
   const muteLabel = typeof muted !== "boolean" ? "Mute unavailable" : muted ? "Unmute" : "Mute";
-  $("mute").setAttribute("aria-label", muteLabel);
-  $("mute").title = muteLabel;
-  $("mute-icon").textContent = muted ? "volume_off" : "volume_up";
-  if (!state.volumeEditing && !state.volumePending) $("volume").value = String(Number.isFinite(volume) ? volume : 0);
-  $("volume-value").textContent = casting && !Number.isFinite(volume) ? "—" : `${Math.round(Number($("volume").value) * 100)}%`;
+  setAttr(el.mute, "aria-label", muteLabel);
+  setFlag(el.mute, "title", muteLabel);
+  setText(el.muteIcon, muted ? "volume_off" : "volume_up");
+  if (!state.volumeEditing && !state.volumePending) {
+    const value = String(Number.isFinite(volume) ? volume : 0);
+    if (el.volume.value !== value) el.volume.value = value;
+  }
+  setText(el.volumeValue, casting && !Number.isFinite(volume) ? "—" : `${Math.round(Number(el.volume.value) * 100)}%`);
   syncMediaSession(hasMedia, playing, casting, media, duration, current, canSeek);
   syncVisualizer();
 }
 
 export async function setPlayback(shouldPlay) {
-  if (!state.auth || $("play-pause").disabled) return;
+  if (!state.auth || el.playPause.disabled) return;
   const session = state.castContext && state.castContext.getCurrentSession();
   if (session) {
     const media = getCastMediaSession(session);
@@ -78,7 +104,7 @@ export async function setPlayback(shouldPlay) {
     if (playing !== shouldPlay) await castCommand(shouldPlay ? "play" : "pause");
     return;
   }
-  const audio = $("audio");
+  const audio = el.audio;
   if (shouldPlay && (audio.paused || audio.ended)) {
     prepareVisualizer();
     try { await audio.play(); }
@@ -91,12 +117,12 @@ export function currentSeekSelection() {
   const session = state.castContext && state.castContext.getCurrentSession();
   const casting = !!session;
   const media = getCastMediaSession(session);
-  return { casting, target: casting ? media : $("audio").getAttribute("src"), track: casting ? media && media.currentItemId : state.localIndex };
+  return { casting, target: casting ? media : el.audio.getAttribute("src"), track: casting ? media && media.currentItemId : state.localIndex };
 }
 
 export async function seekPlayback(time, selection) {
-  if (!selection || !state.auth || $("seek").disabled || !Number.isFinite(time)) return updatePlayer();
-  time = Math.min(Number($("seek").max), Math.max(0, time));
+  if (!selection || !state.auth || el.seek.disabled || !Number.isFinite(time)) return updatePlayer();
+  time = Math.min(Number(el.seek.max), Math.max(0, time));
   if (selection.casting) {
     const session = state.castContext && state.castContext.getCurrentSession();
     const media = getCastMediaSession(session);
@@ -105,69 +131,69 @@ export async function seekPlayback(time, selection) {
     request.currentTime = time;
     try { await new Promise((resolve, reject) => media.seek(request, resolve, reject)); }
     catch { message("The receiver did not confirm the seek."); }
-  } else if (!(state.castContext && state.castContext.getCurrentSession()) && $("audio").getAttribute("src") === selection.target && state.localIndex === selection.track) {
-    try { $("audio").currentTime = time; }
+  } else if (!(state.castContext && state.castContext.getCurrentSession()) && el.audio.getAttribute("src") === selection.target && state.localIndex === selection.track) {
+    try { el.audio.currentTime = time; }
     catch { message("Could not seek local playback."); }
   }
   updatePlayer();
 }
 
 export function seekFromMediaSession(time, offset = 0) {
-  if ($("seek").disabled) return;
+  if (el.seek.disabled) return;
   const selection = currentSeekSelection();
-  const current = selection.casting && selection.target ? selection.target.getEstimatedTime() : $("audio").currentTime;
+  const current = selection.casting && selection.target ? selection.target.getEstimatedTime() : el.audio.currentTime;
   return seekPlayback(time === null ? current + offset : time, selection);
 }
 
 export function initPlayer() {
   ["play", "pause", "ended", "emptied", "loadedmetadata", "durationchange", "timeupdate", "volumechange"].forEach(event => {
-    $("audio").addEventListener(event, updatePlayer);
+    el.audio.addEventListener(event, updatePlayer);
   });
   document.addEventListener("visibilitychange", syncVisualizer);
-  $("play-pause").addEventListener("click", () => {
+  el.playPause.addEventListener("click", () => {
     const session = state.castContext && state.castContext.getCurrentSession();
     const media = getCastMediaSession(session);
-    const playing = session ? !!media && ["PLAYING", "BUFFERING"].includes(media.playerState) : !$("audio").paused && !$("audio").ended;
+    const playing = session ? !!media && ["PLAYING", "BUFFERING"].includes(media.playerState) : !el.audio.paused && !el.audio.ended;
     return setPlayback(!playing);
   });
-  $("stop").addEventListener("click", () => {
+  el.stop.addEventListener("click", () => {
     if (state.castContext && state.castContext.getCurrentSession()) return castCommand("stop");
     cancelPreparation();
     stopLocal();
     message("Local playback stopped.");
   });
-  $("next").addEventListener("click", () => {
+  el.next.addEventListener("click", () => {
     if (state.castContext && state.castContext.getCurrentSession()) return castCommand("next");
     return advanceLocal();
   });
-  $("previous").addEventListener("click", () => {
+  el.previous.addEventListener("click", () => {
     if (state.castContext && state.castContext.getCurrentSession()) return castCommand("previous");
     return advanceLocal(-1);
   });
-  $("seek").addEventListener("input", () => {
+  el.seek.addEventListener("input", () => {
     state.seeking = currentSeekSelection();
-    $("seek-current").textContent = formatTime(Number($("seek").value));
+    setText(el.seekCurrent, formatTime(Number(el.seek.value)));
   });
-  $("seek").addEventListener("change", () => {
+  el.seek.addEventListener("change", () => {
     const selection = state.seeking;
     state.seeking = null;
-    return seekPlayback(Number($("seek").value), selection);
+    return seekPlayback(Number(el.seek.value), selection);
   });
-  $("volume").addEventListener("input", () => {
+  el.volume.addEventListener("input", () => {
     const session = state.castContext && state.castContext.getCurrentSession();
     const casting = !!session;
     state.volumeEditing = { casting, session };
-    $("volume-value").textContent = `${Math.round(Number($("volume").value) * 100)}%`;
-    if (!casting) $("audio").volume = Number($("volume").value);
+    setText(el.volumeValue, `${Math.round(Number(el.volume.value) * 100)}%`);
+    if (!casting) el.audio.volume = Number(el.volume.value);
   });
-  $("volume").addEventListener("change", async () => {
+  el.volume.addEventListener("change", async () => {
     const selection = state.volumeEditing;
     state.volumeEditing = null;
     if (!selection) return updatePlayer();
     if (selection.casting) {
       const session = state.castContext && state.castContext.getCurrentSession();
       if (!session || session !== selection.session) return updatePlayer();
-      const volume = Number($("volume").value);
+      const volume = Number(el.volume.value);
       state.volumePending = true;
       updatePlayer();
       try { await session.setVolume(volume); }
@@ -176,7 +202,7 @@ export function initPlayer() {
     }
     updatePlayer();
   });
-  $("mute").addEventListener("click", async () => {
+  el.mute.addEventListener("click", async () => {
     if (state.volumePending) return;
     const session = state.castContext && state.castContext.getCurrentSession();
     if (session) {
@@ -188,12 +214,11 @@ export function initPlayer() {
       catch { message("Could not change Chromecast mute state."); }
       finally { state.volumePending = false; }
     } else {
-      const audio = $("audio");
-      audio.muted = !audio.muted;
+      el.audio.muted = !el.audio.muted;
     }
     updatePlayer();
   });
-  $("stop-browser").addEventListener("click", () => {
+  el.stopBrowser.addEventListener("click", () => {
     if (state.preparingOutput === "local") cancelPreparation();
     stopLocal();
     message("Browser playback stopped. Receiver playback was not changed.");

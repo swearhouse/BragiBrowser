@@ -257,5 +257,4 @@ export async function castCommand(command) {
 export function initCast() {
   window.__onGCastApiAvailable = onGcCastApiAvailable;
   window.castSdkLoadFailed = castSdkLoadFailed;
-  setInterval(updateCast, 1000);
 }

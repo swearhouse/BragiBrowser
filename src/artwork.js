@@ -1,5 +1,5 @@
 import { $, log } from "./dom.js";
-import { state } from "./state.js";
+import { state, visualizer } from "./state.js";
 import { setPlayback, seekFromMediaSession } from "./player.js";
 
 export function safeArtworkUrl(value) {
@@ -58,7 +58,11 @@ export function updateAccent(url, version) {
   image.referrerPolicy = "no-referrer";
   image.onload = () => {
     if (version !== state.artworkVersion) return;
-    try { document.documentElement.style.setProperty("--accent", artworkAccent(image)); }
+    try {
+      const accent = artworkAccent(image);
+      document.documentElement.style.setProperty("--accent", accent);
+      visualizer.accent = accent;
+    }
     catch { log("Could not extract an accent from the artwork; using the default color."); }
   };
   image.onerror = () => {
@@ -72,6 +76,7 @@ export function updateArtwork(source) {
   state.artworkSource = source;
   state.artworkVersion++;
   document.documentElement.style.removeProperty("--accent");
+  visualizer.accent = "";
   const image = $("player-artwork");
   image.hidden = true;
   $("artwork-placeholder").hidden = false;
@@ -165,6 +170,7 @@ export function initArtwork() {
   $("player-artwork").addEventListener("error", () => {
     state.artworkVersion++;
     document.documentElement.style.removeProperty("--accent");
+    visualizer.accent = "";
     $("player-artwork").hidden = true;
     $("artwork-placeholder").hidden = false;
     $("player-background").hidden = true;

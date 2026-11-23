@@ -12,4 +12,4 @@ export const state = {
   editingPlaylistId: null, editingSong: null
 };
 
-export const visualizer = { context: null, source: null, analyser: null, sink: null, stream: null, frame: 0, failure: "" };
+export const visualizer = { context: null, source: null, analyser: null, sink: null, stream: null, frame: 0, failure: "", timeData: null, freqData: null, accent: "" };

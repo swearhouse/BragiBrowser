@@ -6,6 +6,7 @@ import { startPlayback } from "./localPlayback.js";
 import { queueNext, getCastMediaSession } from "./cast.js";
 
 export const userScrollPauseMs = 5000;
+let highlightedButton = null;
 
 export function centerCurrentTrack() {
   clearTimeout(state.autoScrollTimer);
@@ -33,8 +34,8 @@ export function filterTracks() {
   const current = $("tracks").querySelector('.track-button[aria-current="true"]');
   const wasHidden = current && current.parentElement.hidden;
   let matches = 0;
-  $("tracks").querySelectorAll("li").forEach((item, index) => {
-    item.hidden = !playlist.videos[index].name.toLocaleLowerCase().includes(query);
+  $("tracks").querySelectorAll("li").forEach(item => {
+    item.hidden = !(item.dataset.search || "").includes(query);
     if (!item.hidden) matches++;
   });
   $("tracks-empty").hidden = matches > 0;
@@ -51,13 +52,17 @@ export function showTracks(playlist, isQueue = false) {
   $("playlist-display-name").textContent = playlist ? playlist.name : "No playlist selected";
   $("playlist-summary").textContent = playlist
     ? ` - (${playlist.videos.length} ${playlist.videos.length === 1 ? "song" : "songs"})${isQueue ? " · server queue" : ""}` : "";
-  $("tracks").replaceChildren();
+  const list = $("tracks");
+  list.replaceChildren();
+  highlightedButton = null;
   if (!playlist) {
     filterTracks();
     return;
   }
+  const fragment = document.createDocumentFragment();
   playlist.videos.forEach((video, index) => {
     const item = document.createElement("li");
+    item.dataset.search = video.name.toLocaleLowerCase();
     const button = document.createElement("button");
     button.type = "button";
     button.className = "track-button";
@@ -65,16 +70,6 @@ export function showTracks(playlist, isQueue = false) {
     button.dataset.trackNumber = index + 1;
     button.setAttribute("aria-label", `Play ${video.name}, track ${index + 1}`);
     button.disabled = state.busy || state.castLoading;
-    button.addEventListener("click", () => {
-      clearTimeout(state.autoScrollTimer);
-      state.autoScrollTimer = null;
-      if (isQueue) {
-        startPlayback(null, { queueId: playlist.id, index });
-      } else {
-        const occurrence = playlist.videos.slice(0, index + 1).filter(track => track.name === video.name && track.link === video.link).length;
-        startPlayback(playlist.id, { video, occurrence });
-      }
-    });
     item.append(button);
     if (!isQueue) {
       const menu = document.createElement("details");
@@ -90,34 +85,26 @@ export function showTracks(playlist, isQueue = false) {
       toggle.append(icon);
       const actions = document.createElement("div");
       actions.className = "track-menu-actions";
-      const addAction = (label, className, handler) => {
+      const addAction = (label, className) => {
         const action = document.createElement("button");
         action.type = "button";
         action.className = className;
         action.textContent = label;
-        action.addEventListener("click", () => {
-          menu.open = false;
-          handler();
-        });
         actions.append(action);
         return action;
       };
-      const queue = addAction("Queue", "queue-song", () => queueNext(video));
+      const queue = addAction("Queue", "queue-song");
       queue.disabled = state.busy || state.castLoading;
-      addAction("Open in YouTube", "open-song", () => openYouTube(video));
-      const edit = addAction("Edit", "edit-song", () => openSongEditor(playlist, index));
-      const remove = addAction("Delete", "delete-song", () => deleteSong(playlist, index));
+      addAction("Open in YouTube", "open-song");
+      const edit = addAction("Edit", "edit-song");
+      const remove = addAction("Delete", "delete-song");
       edit.disabled = remove.disabled = state.busy || state.castLoading || !!state.playlistController;
       menu.append(toggle, actions);
-      toggle.addEventListener("click", () => {
-        if (!menu.open) document.querySelectorAll(".track-menu[open]").forEach(other => {
-          if (other !== menu) other.open = false;
-        });
-      });
       item.append(menu);
     }
-    $("tracks").append(item);
+    fragment.append(item);
   });
+  list.append(fragment);
   filterTracks();
   updateTrackHighlight();
 }
@@ -169,15 +156,12 @@ export function updateTrackHighlight() {
       highlighted = displayed.videos.findIndex(video => matches(video) && ++found === occurrence);
     }
   }
-  let changed = false;
-  $("tracks").querySelectorAll(".track-button").forEach((button, i) => {
-    if (i === highlighted && !button.hasAttribute("aria-current")) {
-      button.setAttribute("aria-current", "true");
-      changed = true;
-    }
-    else if (i !== highlighted && button.hasAttribute("aria-current")) button.removeAttribute("aria-current");
-  });
-  if (changed && state.autoScrollTimer === null) centerCurrentTrack();
+  const next = $("tracks").querySelectorAll(".track-button")[highlighted] || null;
+  if (next === highlightedButton) return;
+  if (highlightedButton) highlightedButton.removeAttribute("aria-current");
+  if (next) next.setAttribute("aria-current", "true");
+  highlightedButton = next;
+  if (state.autoScrollTimer === null) centerCurrentTrack();
 }
 
 export function renderPlaylists() {
@@ -390,6 +374,38 @@ export async function changeSong(action, url) {
 export function initPlaylists() {
   ["wheel", "touchmove", "pointerdown", "keydown"].forEach(type => {
     $("tracks").addEventListener(type, pauseAutoScroll, { passive: true });
+  });
+  $("tracks").addEventListener("click", event => {
+    if (!(event.target instanceof Element)) return;
+    const list = $("tracks");
+    const item = event.target.closest("li");
+    if (!item || !list.contains(item)) return;
+    const index = Array.prototype.indexOf.call(list.children, item);
+    const playlist = state.displayedPlaylist;
+    if (!playlist || !playlist.videos[index]) return;
+    const video = playlist.videos[index];
+    const action = event.target.closest("button");
+    const menu = event.target.closest(".track-menu");
+    if (action && menu) {
+      menu.open = false;
+      if (action.classList.contains("queue-song")) return queueNext(video);
+      if (action.classList.contains("open-song")) return openYouTube(video);
+      if (action.classList.contains("edit-song")) return openSongEditor(playlist, index);
+      if (action.classList.contains("delete-song")) return deleteSong(playlist, index);
+    }
+    if (action && action.classList.contains("track-button")) {
+      clearTimeout(state.autoScrollTimer);
+      state.autoScrollTimer = null;
+      if (state.displayedIsQueue) return startPlayback(null, { queueId: playlist.id, index });
+      const occurrence = playlist.videos.slice(0, index + 1).filter(track => track.name === video.name && track.link === video.link).length;
+      return startPlayback(playlist.id, { video, occurrence });
+    }
+    const toggle = event.target.closest(".track-menu > summary");
+    if (toggle && !toggle.parentElement.open) {
+      document.querySelectorAll(".track-menu[open]").forEach(other => {
+        if (other !== toggle.parentElement) other.open = false;
+      });
+    }
   });
   $("track-search").addEventListener("input", filterTracks);
   document.addEventListener("click", event => {

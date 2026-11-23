@@ -10,7 +10,7 @@ import { castQueueItems, insertCastItems, waitForCastMediaSession, updateCast, g
 
 export function stopLocal() {
   cancelLocalPrefetch();
-  stopVisualizer();
+  stopVisualizer(true);
   const audio = $("audio");
   audio.pause();
   audio.removeAttribute("src");
@@ -109,7 +109,6 @@ export async function startPlayback(playlistId = null, selection = null) {
   cancelLocalPrefetch();
   const session = state.castContext && state.castContext.getCurrentSession();
   const output = session ? "cast" : "local";
-  if (output === "local") prepareVisualizer();
   const castSessionVersion = state.castSessionVersion;
   cancelPreparation();
   const generation = state.generation;
@@ -161,6 +160,7 @@ export async function startPlayback(playlistId = null, selection = null) {
     else $("toggle-track-view").hidden = false;
     if (output === "local") {
       stopLocal();
+      prepareVisualizer();
       state.localQueue = queue.videos.slice();
       state.localQueueOrigins = queue.videos.map((_, index) => index);
       state.localQueueSnapshot = queue;
@@ -329,8 +329,8 @@ export async function nextLocal(generation, signal, direction = 1) {
 export async function advanceLocal(direction = 1) {
   if (state.busy || !state.localQueue.length) return;
   if (direction < 0) cancelLocalPrefetch();
-  prepareVisualizer();
   cancelPreparation();
+  prepareVisualizer();
   const generation = state.generation;
   const controller = new AbortController();
   state.controller = controller;
@@ -380,7 +380,7 @@ export function initLocalPlayback() {
       const position = audio.currentTime;
       const shouldPlay = !state.localHasPlayed || !audio.paused;
       state.visualizerAccess = "blocked";
-      stopVisualizer();
+      stopVisualizer(true);
       audio.removeAttribute("crossorigin");
       if (Number.isFinite(position) && position > 0) {
         audio.addEventListener("loadedmetadata", () => {

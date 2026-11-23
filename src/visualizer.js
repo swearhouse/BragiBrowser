@@ -2,14 +2,19 @@ import { $, log } from "./dom.js";
 import { state, visualizer } from "./state.js";
 import { api, ApiError } from "./api.js";
 
-export function stopVisualizer() {
+export function stopVisualizer(releaseContext = false) {
   if (visualizer.frame) cancelAnimationFrame(visualizer.frame);
   visualizer.frame = 0;
   if (visualizer.source) visualizer.source.disconnect();
   if (visualizer.analyser) visualizer.analyser.disconnect();
   if (visualizer.sink) visualizer.sink.disconnect();
   if (visualizer.stream) visualizer.stream.getTracks().forEach(track => track.stop());
+  if (releaseContext && visualizer.context && typeof visualizer.context.close === "function" && visualizer.context.state !== "closed") {
+    visualizer.context.close();
+    visualizer.context = null;
+  }
   visualizer.source = visualizer.analyser = visualizer.sink = visualizer.stream = null;
+  visualizer.timeData = visualizer.freqData = null;
   $("visualizer").hidden = true;
 }
 
@@ -82,11 +87,15 @@ export function drawVisualizer() {
       return;
     }
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#8de0bd";
+    if (!visualizer.accent) visualizer.accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#8de0bd";
+    ctx.fillStyle = ctx.strokeStyle = visualizer.accent;
     ctx.globalAlpha = 0.22;
     const mode = $("visualizer-mode").value;
     if (mode === "wave") {
-      const data = new Uint8Array(visualizer.analyser.fftSize);
+      if (!visualizer.timeData || visualizer.timeData.length !== visualizer.analyser.fftSize) {
+        visualizer.timeData = new Uint8Array(visualizer.analyser.fftSize);
+      }
+      const data = visualizer.timeData;
       visualizer.analyser.getByteTimeDomainData(data);
       ctx.lineWidth = 2 * scale;
       ctx.beginPath();
@@ -97,7 +106,10 @@ export function drawVisualizer() {
       });
       ctx.stroke();
     } else {
-      const data = new Uint8Array(visualizer.analyser.frequencyBinCount);
+      if (!visualizer.freqData || visualizer.freqData.length !== visualizer.analyser.frequencyBinCount) {
+        visualizer.freqData = new Uint8Array(visualizer.analyser.frequencyBinCount);
+      }
+      const data = visualizer.freqData;
       visualizer.analyser.getByteFrequencyData(data);
       const bars = 48, step = width / bars;
       const radius = Math.min(width, height) * 0.18;
@@ -168,7 +180,7 @@ export function syncVisualizer() {
       visualizer.analyser.connect(visualizer.sink);
       visualizer.sink.connect(visualizer.context.destination);
     } catch {
-      stopVisualizer();
+      stopVisualizer(true);
       visualizer.failure = "This stream could not be analyzed; browser playback is unchanged.";
       $("visualizer-status").textContent = visualizer.failure;
       $("visualizer-status").hidden = false;

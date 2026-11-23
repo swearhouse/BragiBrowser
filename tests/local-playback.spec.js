@@ -451,18 +451,27 @@ test("visualizer setup opens and closes an audio capture without changing playba
   await client.playSelected();
   await waitForLocalPlayback(client);
   const initialCaptures = await client.control("captures");
+  const initialContexts = await client.control("audioContexts");
   expect(initialCaptures).toBeGreaterThan(0);
+  expect(initialContexts).toBeGreaterThan(0);
   await clickById(client, "open-settings");
   expect(await client.control("localPaused")).toBe(false);
   expect(await client.control("stoppedCaptures")).toBeGreaterThan(0);
+  expect(await client.control("closedContexts")).toBe(0);
   await expect(client.el("visualizer")).toBeHidden();
   await clickById(client, "close-settings");
   await expect(client.el("visualizer")).toBeVisible();
   await expect.poll(() => client.control("captures")).toBeGreaterThan(initialCaptures);
+  expect(await client.control("audioContexts")).toBe(initialContexts);
   expect(await client.control("localPaused")).toBe(false);
+  await setVisualizerMode(client, "off");
+  expect(await client.control("closedContexts")).toBeGreaterThan(0);
+  await setVisualizerMode(client, "bars");
+  await expect.poll(() => client.control("audioContexts")).toBeGreaterThan(initialContexts);
   await clickById(client, "stop");
   await expect(client.el("visualizer")).toBeHidden();
   expect(await client.control("stoppedCaptures")).toBeGreaterThan(0);
+  expect(await client.control("closedContexts")).toBeGreaterThan(1);
 });
 
 test("spectrum bars respond to audio and low-frequency-only data", async ({client}) => {

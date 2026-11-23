@@ -32,7 +32,7 @@
     frameworkMediaAvailable: true, otherMediaSessions: [],
     localPaused: true, localTime: 0, localError: null, spectrumLevel: 0,
     lowFrequencyOnly: false, descendingSpectrum: false, captureSupported: true,
-    captures: 0, stoppedCaptures: 0, storageFailure: null
+    captures: 0, stoppedCaptures: 0, audioContexts: 0, closedContexts: 0, storageFailure: null
   };
   h.controls = controls;
   h.gates = gates;
@@ -69,7 +69,8 @@
   };
 
   window.AudioContext = class {
-    constructor() { this.state = "running"; this.destination = {}; }
+    constructor() { this.state = "running"; this.destination = {}; controls.audioContexts++; }
+    close() { this.state = "closed"; controls.closedContexts++; return Promise.resolve(); }
     createMediaStreamSource() { return {connect() {}, disconnect() {}}; }
     createAnalyser() {
       return {

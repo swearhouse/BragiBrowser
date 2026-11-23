@@ -1,6 +1,6 @@
 import { $, message } from "./dom.js";
 import { state, usernameKey, autoShuffleKey, visualizerKey } from "./state.js";
-import { prepareVisualizer, syncVisualizer } from "./visualizer.js";
+import { prepareVisualizer, stopVisualizer, syncVisualizer } from "./visualizer.js";
 import { centerCurrentTrack } from "./playlists.js";
 
 export let usernameSaveFailed = false;
@@ -71,7 +71,8 @@ export function initSettings() {
     } catch {
       message("Browser storage is unavailable; the visualizer changed for this page but was not saved.");
     }
-    if ($("visualizer-mode").value !== "off") prepareVisualizer();
+    if ($("visualizer-mode").value === "off") stopVisualizer(true);
+    else prepareVisualizer();
     syncVisualizer();
   });
 }
