@@ -4,14 +4,14 @@ import { getCastMediaSession, castCommand, updateCast } from "./cast.js";
 import { advanceLocal, stopLocal } from "./localPlayback.js";
 import { cancelPreparation } from "./shell.js";
 import { updateTrackHighlight } from "./playlists.js";
-import { updateArtwork, syncMediaSession } from "./artwork.js";
+import { updateArtwork, syncMediaSession, setUpdatePlayer } from "./artwork.js";
 import { prepareVisualizer, syncVisualizer } from "./visualizer.js";
 
 const el = {
   audio: $("audio"), outputStatus: $("output-status"), stopBrowser: $("stop-browser"), playerTitle: $("player-title"),
   playPause: $("play-pause"), playPauseIcon: $("play-pause-icon"), stop: $("stop"), previous: $("previous"), next: $("next"),
   seek: $("seek"), seekDuration: $("seek-duration"), seekCurrent: $("seek-current"), volume: $("volume"), mute: $("mute"),
-  muteIcon: $("mute-icon"), volumeValue: $("volume-value")
+  muteIcon: $("mute-icon"), volumeValue: $("volume-value"), reclaim: $("reclaim-media-session")
 };
 
 function setText(node, value) {
@@ -90,6 +90,10 @@ export function updatePlayer() {
     if (el.volume.value !== value) el.volume.value = value;
   }
   setText(el.volumeValue, casting && !Number.isFinite(volume) ? "—" : `${Math.round(Number(el.volume.value) * 100)}%`);
+  const reclaimable = hasMedia && state.mediaSessionNeedsReclaim && typeof navigator.mediaSession !== "undefined";
+  setFlag(el.reclaim, "hidden", !reclaimable);
+  setFlag(el.reclaim, "disabled", !reclaimable);
+  if (reclaimable) el.reclaim.title = "Make this app the active system media session";
   syncMediaSession(hasMedia, playing, casting, media, duration, current, canSeek);
   syncVisualizer();
 }
@@ -146,6 +150,7 @@ export function seekFromMediaSession(time, offset = 0) {
 }
 
 export function initPlayer() {
+  setUpdatePlayer(updatePlayer);
   ["play", "pause", "ended", "emptied", "loadedmetadata", "durationchange", "timeupdate", "volumechange"].forEach(event => {
     el.audio.addEventListener(event, updatePlayer);
   });
@@ -222,6 +227,11 @@ export function initPlayer() {
     if (state.preparingOutput === "local") cancelPreparation();
     stopLocal();
     message("Browser playback stopped. Receiver playback was not changed.");
+  });
+  el.reclaim.addEventListener("click", () => {
+    state.mediaSessionNeedsReclaim = false;
+    updatePlayer();
+    message("Reclaim request sent; the browser may restore Bragi as the system media session.");
   });
   updatePlayer();
 }

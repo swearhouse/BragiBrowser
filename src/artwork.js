@@ -92,10 +92,20 @@ export function updateArtwork(source) {
   image.src = url;
 }
 
+let _updatePlayer = null;
+export function setUpdatePlayer(fn) { _updatePlayer = fn; }
+
+function handleExternalMediaControl() {
+  if (!state.mediaSessionNeedsReclaim) {
+    state.mediaSessionNeedsReclaim = true;
+    if (_updatePlayer) _updatePlayer();
+  }
+}
+
 export const mediaActions = {
-  play: () => setPlayback(true),
-  pause: () => setPlayback(false),
-  stop: () => $("stop").click(),
+  play: () => { state.mediaSessionNeedsReclaim = false; return setPlayback(true); },
+  pause: () => { state.mediaSessionNeedsReclaim = false; handleExternalMediaControl(); return setPlayback(false); },
+  stop: () => { state.mediaSessionNeedsReclaim = false; handleExternalMediaControl(); $("stop").click(); },
   previoustrack: () => $("previous").click(),
   nexttrack: () => $("next").click(),
   seekto: details => seekFromMediaSession(details.seekTime),

@@ -9,7 +9,7 @@ export const state = {
   displayedPlaylist: null, displayedIsQueue: false, lastQueue: null,
   seeking: null, volumeEditing: null, volumePending: false, autoScrollTimer: null,
   visualizerAccess: "unchecked", localHasPlayed: false, localDirectUrl: "", playlistController: null,
-  editingPlaylistId: null, editingSong: null
+  editingPlaylistId: null, editingSong: null, mediaSessionNeedsReclaim: false
 };
 
 export const visualizer = { context: null, source: null, analyser: null, sink: null, stream: null, frame: 0, failure: "", timeData: null, freqData: null, accent: "" };

@@ -272,6 +272,23 @@ test("Media Session seek handlers clamp and use default relative offsets", async
   expect((await mediaSnapshot(client)).position.position).toBe(0);
 });
 
+test("a paused Media Session can be reclaimed with the reclaim button", async ({client}) => {
+  await client.login();
+  await client.selectPlaylist();
+  await client.playSelected();
+  await waitForLocalPlayback(client);
+  await expect(client.el("reclaim-media-session")).toBeHidden();
+  await mediaCall(client, "pause");
+  await expect(client.el("reclaim-media-session")).toBeVisible();
+  await clickById(client, "reclaim-media-session");
+  await expect(client.el("reclaim-media-session")).toBeHidden();
+  await expect(client.el("status")).toContainText("Reclaim request sent");
+  await expect.poll(() => client.control("localPaused")).toBe(true);
+  await mediaCall(client, "play");
+  await expect(client.el("reclaim-media-session")).toBeHidden();
+  await expect.poll(() => client.control("localPaused")).toBe(false);
+});
+
 test("an unsupported Media Session action does not block the remaining controls", async ({client}) => {
   await client.login();
   await client.selectPlaylist();
