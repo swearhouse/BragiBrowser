@@ -2,6 +2,7 @@
 !Dockerfile
 !configure-server.sh
 !index.html
-!app.js
 !style.css
+!src/
+!src/**
 !bragi.png

@@ -10,7 +10,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
-  <script defer src="app.js"></script>
+  <script>window.castSdkLoadFailed = function () { document.getElementById("cast-status").textContent = "Cast SDK could not be downloaded."; };</script>
+  <script type="module" src="src/main.js"></script>
   <script defer src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1" onerror="window.castSdkLoadFailed()"></script>
 </head>
 <body>

@@ -182,8 +182,24 @@ available if the icon font cannot be loaded.
 See [CLIENT_GUIDE.md](CLIENT_GUIDE.md) for the API contract and security
 considerations.
 
-## Browser checks
+## Development checks
 
-With the development server running, open `http://localhost:8765/tests/client.html`
-to run the mocked client checks. These do not replace testing against a real
+Install the development dependencies and the test browser once:
+
+```sh
+npm install
+npx playwright install chromium
+```
+
+Then run the automated checks:
+
+```sh
+npm test
+```
+
+The Playwright suite serves the static client on `http://127.0.0.1:8765`, mocks
+BragiServer and the Cast SDK, and covers configuration, settings, playlist
+editing, local playback, the visualizer, and Cast playback. Use
+`npm run test:ui` for the interactive runner and `npm run check` to parse every
+source and test module. These checks do not replace testing against a real
 HTTPS BragiServer and Chromecast.

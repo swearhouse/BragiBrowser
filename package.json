@@ -1,0 +1,15 @@
+{
+  "name": "bragibrowser",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser playback client for BragiServer",
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "check": "node tests/check-syntax.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1"
+  }
+}
