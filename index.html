@@ -17,7 +17,7 @@
 <body>
   <header class="account-bar">
     <button id="toggle-sidebar" class="brand" type="button" aria-controls="playlist-sidebar" aria-expanded="true" aria-label="Bragi: Hide playlist sidebar" title="Hide playlist sidebar"><img class="brand-mark" src="bragi.png" alt=""><span>Bragi</span><span class="brand-subtitle">Browser</span></button>
-    <div class="cast"><span id="cast-status">Waiting for Cast…</span><google-cast-launcher aria-label="Connect to Chromecast"></google-cast-launcher></div>
+    <div class="cast"><span id="cast-status">Waiting for Cast…</span><button id="reconnect-cast" class="cast-reconnect" type="button" title="Refresh or reconnect the Cast receiver"><span class="material-symbols-outlined" aria-hidden="true">refresh</span><span>Reconnect</span></button><google-cast-launcher aria-label="Connect to Chromecast"></google-cast-launcher></div>
     <button id="open-settings" class="button-with-icon" type="button"><span class="material-symbols-outlined" aria-hidden="true">settings</span><span>Settings</span></button>
     <button id="open-diagnostics" class="button-with-icon" type="button"><span class="material-symbols-outlined" aria-hidden="true">monitoring</span><span>Diagnostics</span></button>
     <button id="signout" class="button-with-icon" type="button" hidden><span class="material-symbols-outlined" aria-hidden="true">logout</span><span>Sign out</span></button>
@@ -71,6 +71,7 @@
         <button id="diagnostics-copy" type="button">Copy report</button>
       </div>
       <p id="diagnostics-status" role="status">Ready.</p>
+      <p class="diagnostics-legend" aria-label="Status colors"><span data-tone="ok">OK</span><span data-tone="warn">Warning</span><span data-tone="error">Error</span></p>
       <h2>Connection</h2>
       <dl class="diagnostics-grid">
         <div><dt>Server configuration</dt><dd id="diag-server-config">Not loaded</dd></div>

@@ -100,6 +100,41 @@ test("a connected receiver is selected automatically and its OS media actions ta
   expect(signedOut.handlers.every(handler => handler === null)).toBe(true);
 });
 
+test("reconnect refreshes an active Cast receiver without stopping playback", async ({client}) => {
+  await client.login();
+  await client.selectPlaylist("Mix");
+  await client.installCast();
+  await startCast(client, 1);
+  await client.el("reconnect-cast").click();
+  await client.waitForStatus("Cast receiver connection refreshed.");
+  await expect(client.el("cast-status")).toHaveText("Connected: Test");
+  await expect(client.el("output-status")).toHaveText("Test");
+  expect(await client.control("loads")).toBe(1);
+  expect(await client.control("remoteCommand")).toBe("");
+});
+
+test("reconnect asks for a receiver when none is connected", async ({client}) => {
+  await client.login();
+  await client.installCast();
+  await client.setCurrentSession(false);
+  await client.updateCast();
+  await expect(client.el("cast-status")).toHaveText("No Cast receiver connected");
+  await client.el("reconnect-cast").click();
+  await client.waitForStatus("Cast reconnected.");
+  await expect(client.el("cast-status")).toHaveText("Connected: Test");
+  await expect(client.el("output-status")).toHaveText("Test");
+});
+
+test("reconnect reports when a receiver cannot be selected", async ({client}) => {
+  await client.login();
+  await client.installCast();
+  await client.setCurrentSession(false);
+  await client.controls({rejectReconnect: true});
+  await client.el("reconnect-cast").click();
+  await client.waitForStatus("Could not reconnect to a Cast receiver.");
+  await expect(client.el("cast-status")).toHaveText("No Cast receiver connected");
+});
+
 test("cast mute is pending-aware, reflects external state, handles unknown state, and reports failures", async ({client}) => {
   await client.login();
   await client.selectPlaylist("Mix");

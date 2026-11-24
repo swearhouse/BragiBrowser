@@ -76,6 +76,21 @@ test("diagnostics report redacts credentials and URL secrets", async ({client}) 
   expect(report).not.toContain("/api/v1/audio-stream?");
 });
 
+test("diagnostics values are color coded by status", async ({client}) => {
+  await client.el("open-diagnostics").click();
+  await expect(client.el("diag-account")).toHaveAttribute("data-tone", "warn");
+  await expect(client.el("diag-credentials")).toHaveAttribute("data-tone", "ok");
+  await expect(client.el("diag-cast-session")).toHaveAttribute("data-tone", "warn");
+  await expect(client.el("diag-queue")).toHaveAttribute("data-tone", "warn");
+  await client.el("diagnostics-run").click();
+  await expect(client.el("diag-search-check")).toHaveAttribute("data-tone", "ok");
+  await expect(client.el("diagnostics-status")).toHaveAttribute("data-tone", "warn");
+  await client.controls({searchError: 503});
+  await client.el("diagnostics-run").click();
+  await expect(client.el("diag-search-check")).toHaveAttribute("data-tone", "error");
+  await expect(client.el("diagnostics-status")).toHaveAttribute("data-tone", "error");
+});
+
 test("diagnostics closes on sign out and on a delayed login", async ({client}) => {
   await client.controls({mode: "login-delay"});
   await client.el("username").fill("alice");

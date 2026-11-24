@@ -3,6 +3,7 @@ export const autoShuffleKey = "bragi.autoShuffle";
 export const visualizerKey = "bragi.visualizer";
 export const trackThumbsKey = "bragi.trackThumbs";
 export const youtubeSearchInstanceKey = "bragi.youtubeSearchInstance";
+export const volumeKey = "bragi.volume";
 export const defaultYoutubeSearchInstance = "https://yt.chocolatemoo53.com";
 
 export const state = {

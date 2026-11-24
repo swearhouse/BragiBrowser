@@ -15,13 +15,16 @@ function formatTime(seconds) {
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
 }
 
-function setText(id, value) {
+function setText(id, value, tone = "") {
   const node = $(id);
-  if (node && node.textContent !== value) node.textContent = value;
+  if (!node) return;
+  if (node.textContent !== value) node.textContent = value;
+  if (tone) node.dataset.tone = tone;
+  else delete node.dataset.tone;
 }
 
-function setStatus(value) {
-  setText("diagnostics-status", value);
+function setStatus(value, tone = "") {
+  setText("diagnostics-status", value, tone);
 }
 
 function redact(value) {
@@ -60,6 +63,27 @@ function checkText(check, fallback) {
   return check.detail || fallback;
 }
 
+function checkTone(check, fallback = "warn") {
+  return check && check.tone || fallback;
+}
+
+function castSdkTone(text) {
+  if (/could not|failed|unavailable|error/i.test(text)) return "error";
+  if (/waiting|unknown|no cast|not connected|reconnect/i.test(text)) return "warn";
+  return "ok";
+}
+
+function visualizerTone(mode, notice, failure) {
+  if (mode === "off") return "ok";
+  if (notice || failure || state.visualizerAccess === "blocked") return "warn";
+  if (!visualizer.context || visualizer.context.state !== "running") return "warn";
+  return "ok";
+}
+
+function storageTone(value) {
+  return value === "Available" ? "ok" : "warn";
+}
+
 function storageStatus() {
   const key = "bragi.diagnostics.test";
   try {
@@ -94,6 +118,7 @@ function renderSnapshot() {
   const session = currentSession();
   const media = castMedia(session);
   const audio = $("audio");
+  const source = audio.getAttribute("src");
   const mode = $("visualizer-mode").value;
   const notice = $("visualizer-status").hidden ? "" : $("visualizer-status").textContent.trim();
   const visualizerParts = [
@@ -102,48 +127,58 @@ function renderSnapshot() {
     `Analysis: ${state.visualizerAccess}`,
     notice || visualizer.failure
   ].filter(Boolean);
-
-  setText("diag-server-config", serverOrigin()
-    ? `Connected to ${serverOrigin()}`
-    : checkText(checks.serverConfig, "Not loaded; run checks to read server-url.txt"));
-  setText("diag-server-api", checkText(checks.serverApi, "Not checked"));
-  setText("diag-account", state.auth ? `Signed in as ${$("username").value || "unknown user"}` : "Signed out");
-  setText("diag-credentials", state.auth
-    ? "Authorization header is kept in memory; password was cleared after sign-in."
-    : "No authorization header in memory.");
-  setText("diag-search-instance", state.youtubeSearchInstance);
-  setText("diag-search-check", checkText(checks.search, "Not checked"));
-
-  setText("diag-output", session ? `Chromecast: ${deviceName(session)}` : "This browser");
-  setText("diag-cast-sdk", $("cast-status").textContent.trim() || "Unknown");
-  setText("diag-cast-session", session ? `Connected: ${deviceName(session)}` : "No receiver connected");
+  const castSdk = $("cast-status").textContent.trim() || "Unknown";
+  const serverBase = serverOrigin();
+  const serverConfig = serverBase
+    ? `Connected to ${serverBase}`
+    : checkText(checks.serverConfig, "Not loaded; run checks to read server-url.txt");
+  let searchInstanceTone = "warn";
+  if (state.youtubeSearchInstance) {
+    try { searchInstanceTone = new URL(state.youtubeSearchInstance).protocol === "https:" ? "ok" : "error"; }
+    catch { searchInstanceTone = "error"; }
+  }
   const queue = state.castQueue || state.localQueueSnapshot || state.lastQueue;
   const queueSource = state.castQueue ? "Cast queue" : state.localQueueSnapshot ? "Local queue" : state.lastQueue ? "Server queue" : "Queue";
-  setText("diag-queue", queue ? `${queueSource}: ${queue.name} (${queue.videos.length} tracks)` : "None");
   const track = session
     ? media && media.media && media.media.metadata && media.media.metadata.title || "No receiver track loaded."
     : state.localTitle || "No local track loaded.";
-  setText("diag-track", track);
-  const source = audio.getAttribute("src");
   let audioSource = "None";
   if (session) audioSource = "Receiver media (URL hidden)";
   else if (source) {
     audioSource = state.auth && source.startsWith(`${state.auth.base}/api/v1/audio-stream?`)
       ? "Bragi audio proxy (URL hidden)" : "Direct HTTPS stream (URL hidden)";
   }
-  setText("diag-audio-source", audioSource);
-  setText("diag-audio-state", `${audio.paused ? "Paused" : "Playing"} · ${formatTime(audio.currentTime)} / ${formatTime(audio.duration)} · readyState ${audio.readyState}${audio.error ? ` · error ${audio.error.code}` : ""}`);
-  setText("diag-visualizer", visualizerParts.join(" · "));
-
-  setText("diag-page", location.origin);
-  setText("diag-secure", window.isSecureContext ? `Yes (${location.protocol})` : `No (${location.protocol})`);
-  setText("diag-media-session", "mediaSession" in navigator ? "Available" : "Not available");
+  const audioTone = audio.error ? "error" : !source && !session ? "warn" : "ok";
   const support = [];
   support.push(window.AudioContext ? "AudioContext available" : "AudioContext unavailable");
-  support.push(typeof $("audio").captureStream === "function" ? "captureStream available" : "captureStream unavailable");
-  setText("diag-audio-analysis", support.join(" · "));
-  setText("diag-dialog", typeof HTMLDialogElement !== "undefined" && typeof HTMLDialogElement.prototype.showModal === "function" ? "Available" : "Not available");
-  setText("diag-storage", storageStatus());
+  support.push(typeof audio.captureStream === "function" ? "captureStream available" : "captureStream unavailable");
+  const storage = storageStatus();
+  const dialogAvailable = typeof HTMLDialogElement !== "undefined" && typeof HTMLDialogElement.prototype.showModal === "function";
+
+  setText("diag-server-config", serverConfig, serverBase ? "ok" : checkTone(checks.serverConfig));
+  setText("diag-server-api", checkText(checks.serverApi, "Not checked"), checkTone(checks.serverApi));
+  setText("diag-account", state.auth ? `Signed in as ${$("username").value || "unknown user"}` : "Signed out", state.auth ? "ok" : "warn");
+  setText("diag-credentials", state.auth
+    ? "Authorization header is kept in memory; password was cleared after sign-in."
+    : "No authorization header in memory.", "ok");
+  setText("diag-search-instance", state.youtubeSearchInstance, searchInstanceTone);
+  setText("diag-search-check", checkText(checks.search, "Not checked"), checkTone(checks.search));
+
+  setText("diag-output", session ? `Chromecast: ${deviceName(session)}` : "This browser", "ok");
+  setText("diag-cast-sdk", castSdk, castSdkTone(castSdk));
+  setText("diag-cast-session", session ? `Connected: ${deviceName(session)}` : "No receiver connected", session ? "ok" : "warn");
+  setText("diag-queue", queue ? `${queueSource}: ${queue.name} (${queue.videos.length} tracks)` : "None", queue ? "ok" : "warn");
+  setText("diag-track", track, /No .* loaded/i.test(track) ? "warn" : "ok");
+  setText("diag-audio-source", audioSource, audioSource === "None" ? "warn" : "ok");
+  setText("diag-audio-state", `${audio.paused ? "Paused" : "Playing"} · ${formatTime(audio.currentTime)} / ${formatTime(audio.duration)} · readyState ${audio.readyState}${audio.error ? ` · error ${audio.error.code}` : ""}`, audioTone);
+  setText("diag-visualizer", visualizerParts.join(" · "), visualizerTone(mode, notice, visualizer.failure));
+
+  setText("diag-page", location.origin, "ok");
+  setText("diag-secure", window.isSecureContext ? `Yes (${location.protocol})` : `No (${location.protocol})`, window.isSecureContext ? "ok" : "error");
+  setText("diag-media-session", "mediaSession" in navigator ? "Available" : "Not available", "mediaSession" in navigator ? "ok" : "warn");
+  setText("diag-audio-analysis", support.join(" · "), support.some(value => value.includes("unavailable")) ? "warn" : "ok");
+  setText("diag-dialog", dialogAvailable ? "Available" : "Not available", dialogAvailable ? "ok" : "warn");
+  setText("diag-storage", storage, storageTone(storage));
   renderActivity();
 }
 
@@ -159,8 +194,10 @@ function buildReport() {
   for (const [heading, ids] of reportGroups) {
     lines.push("", `## ${heading}`);
     for (const id of ids) {
-      const label = $(id).closest("div").querySelector("dt").textContent.trim();
-      lines.push(`${label}: ${$(id).textContent.trim()}`);
+      const node = $(id);
+      const label = node.closest("div").querySelector("dt").textContent.trim();
+      const tone = node.dataset.tone ? ` [${node.dataset.tone.toUpperCase()}]` : "";
+      lines.push(`${label}${tone}: ${node.textContent.trim()}`);
     }
   }
   const entries = activityEntries();
@@ -191,9 +228,9 @@ async function copyText(text) {
 async function copyReport() {
   try {
     await copyText(buildReport());
-    setStatus("Redacted report copied to clipboard.");
+    setStatus("Redacted report copied to clipboard.", "ok");
   } catch {
-    setStatus("Could not copy the report in this browser.");
+    setStatus("Could not copy the report in this browser.", "error");
   }
 }
 
@@ -201,27 +238,30 @@ async function checkServerApi(signal) {
   if (!state.auth) {
     try {
       const base = await configuredServerBase();
-      checks.serverConfig = {detail: `Configured: ${safe(() => new URL(base).origin, base)}`};
+      checks.serverConfig = {tone: "ok", detail: `Configured: ${safe(() => new URL(base).origin, base)}`};
     } catch (error) {
-      checks.serverConfig = {detail: error.message || "Could not read server-url.txt."};
+      checks.serverConfig = {tone: "error", detail: error.message || "Could not read server-url.txt."};
     }
-    checks.serverApi = {detail: "Sign in to check the server API."};
+    checks.serverApi = {tone: "warn", detail: "Sign in to check the server API."};
     return;
   }
-  checks.serverConfig = {detail: `Connected to ${serverOrigin()}`};
+  checks.serverConfig = {tone: "ok", detail: `Connected to ${serverOrigin()}`};
   try {
     const result = await api("/playlists", {signal});
     if (!result || !Array.isArray(result.playlists)) throw new Error("The server returned an invalid playlist list.");
-    checks.serverApi = {detail: `Reachable · ${result.playlists.length} playlists`};
+    checks.serverApi = {tone: "ok", detail: `Reachable · ${result.playlists.length} playlists`};
   } catch (error) {
-    checks.serverApi = {detail: error.name === "AbortError" ? "Check cancelled." : error.message || "Server check failed."};
+    checks.serverApi = {
+      tone: error.name === "AbortError" ? "warn" : "error",
+      detail: error.name === "AbortError" ? "Check cancelled." : error.message || "Server check failed."
+    };
   }
 }
 
 async function checkSearch(signal) {
   let url;
   try { url = new URL("/api/v1/search", state.youtubeSearchInstance); }
-  catch { checks.search = {detail: "Search instance URL is invalid."}; return; }
+  catch { checks.search = {tone: "error", detail: "Search instance URL is invalid."}; return; }
   url.searchParams.set("q", "bragi");
   url.searchParams.set("type", "video");
   const timeout = new AbortController();
@@ -235,10 +275,13 @@ async function checkSearch(signal) {
       credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store"
     });
     checks.search = response.ok
-      ? {detail: `Reachable (HTTP ${response.status})`}
-      : {detail: `Search endpoint returned HTTP ${response.status}.`};
+      ? {tone: "ok", detail: `Reachable (HTTP ${response.status})`}
+      : {tone: "error", detail: `Search endpoint returned HTTP ${response.status}.`};
   } catch (error) {
-    checks.search = {detail: signal.aborted ? "Check cancelled." : "Could not reach the search instance. Check HTTPS and CORS support."};
+    checks.search = {
+      tone: signal.aborted ? "warn" : "error",
+      detail: signal.aborted ? "Check cancelled." : "Could not reach the search instance. Check HTTPS and CORS support."
+    };
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", abort);
@@ -250,7 +293,7 @@ export function cancelDiagnostics() {
   checkController = null;
   checks = { serverApi: null, search: null, serverConfig: null };
   $("diagnostics-run").disabled = false;
-  setStatus("Checks cancelled.");
+  setStatus("Checks cancelled.", "warn");
 }
 
 export function closeDiagnostics() {
@@ -267,18 +310,20 @@ async function runChecks() {
   const controller = new AbortController();
   checkController = controller;
   checks = {
-    serverApi: {detail: "Checking…"},
-    search: {detail: "Checking…"},
+    serverApi: {tone: "warn", detail: "Checking…"},
+    search: {tone: "warn", detail: "Checking…"},
     serverConfig: checks.serverConfig
   };
   $("diagnostics-run").disabled = true;
-  setStatus("Running checks…");
+  setStatus("Running checks…", "warn");
   renderSnapshot();
   await Promise.all([checkServerApi(controller.signal), checkSearch(controller.signal)]);
   if (checkController === controller) {
     checkController = null;
     $("diagnostics-run").disabled = false;
-    setStatus("Checks complete.");
+    const tones = Object.values(checks).filter(Boolean).map(check => check.tone);
+    const tone = tones.includes("error") ? "error" : tones.includes("warn") ? "warn" : "ok";
+    setStatus("Checks complete.", tone);
     renderSnapshot();
   }
 }

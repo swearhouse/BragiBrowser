@@ -28,7 +28,7 @@
     resolveEntered: false, proxyEntered: false, proxyCancelled: false, prefetchCancelled: false,
     deferredPrefetchUrl: null, currentQueue: queue,
     remoteVolume: 0.65, remoteMuted: false, remoteTime: 20, seekSupported: true,
-    rejectSeek: false, rejectVolume: false, rejectMute: false, delayMute: false, remoteCommand: "",
+    rejectSeek: false, rejectVolume: false, rejectMute: false, rejectReconnect: false, delayMute: false, remoteCommand: "",
     frameworkMediaAvailable: true, otherMediaSessions: [],
     localPaused: true, localTime: 0, localError: null, spectrumLevel: 0,
     lowFrequencyOnly: false, descendingSpectrum: false, captureSupported: true,
@@ -45,7 +45,7 @@
   h.queue = queue;
   h.initialPlaylists = initialPlaylists;
   h.createdPlaylists = createdPlaylists;
-  h.keys = ["bragi.username", "bragi.autoShuffle", "bragi.visualizer"];
+  h.keys = ["bragi.username", "bragi.autoShuffle", "bragi.visualizer", "bragi.volume"];
 
   const mediaSession = {
     metadata: null, playbackState: "none", position: null, unsupported: null,
@@ -313,7 +313,14 @@
   };
   h.setCastContext = async () => {
     const app = await h.app();
-    app.stateObject.castContext = {getCurrentSession: () => window.currentSession || null};
+    app.stateObject.castContext = {
+      getCurrentSession: () => window.currentSession || null,
+      requestSession: async () => {
+        if (controls.rejectReconnect) throw new Error("failed");
+        window.currentSession = window.testSession || null;
+        return window.currentSession;
+      }
+    };
     app.cast.updateCast();
   };
   h.resetMediaSessionCache = async () => (await h.app()).artwork.resetMediaSessionCache();

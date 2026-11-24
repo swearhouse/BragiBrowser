@@ -710,6 +710,35 @@ test("volume and mute controls update local audio", async ({client}) => {
   await expect(client.el("mute")).toHaveAttribute("aria-label", "Mute");
 });
 
+test("local volume is saved and restored after a reload", async ({client}) => {
+  await client.login();
+  await client.el("volume").fill("0.35");
+  await client.el("volume").dispatchEvent("change");
+  await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.volume"))).toBe("0.35");
+  await client.page.reload();
+  await expect(client.el("volume")).toHaveValue("0.35");
+  await expect(client.el("volume-value")).toHaveText("35%");
+  expect(await audioProperty(client, "volume")).toBe(0.35);
+});
+
+test("an invalid saved volume falls back to the default", async ({client}) => {
+  await client.page.evaluate(() => localStorage.setItem("bragi.volume", "loud"));
+  await client.page.reload();
+  await expect(client.el("status")).toContainText("The saved volume setting is invalid; the default volume is used.");
+  await expect(client.el("volume")).toHaveValue("1");
+  expect(await audioProperty(client, "volume")).toBe(1);
+});
+
+test("volume storage failures are reported but still change the volume", async ({client}) => {
+  await client.login();
+  await client.controls({storageFailure: "all"});
+  await client.el("volume").fill("0.25");
+  await client.el("volume").dispatchEvent("change");
+  await expect(client.el("status")).toContainText("Browser storage is unavailable; volume changed for this page but was not saved.");
+  expect(await audioProperty(client, "volume")).toBe(0.25);
+  expect(await client.page.evaluate(() => localStorage.getItem("bragi.volume"))).toBeNull();
+});
+
 test("stop clears the highlight, Media Session, and audio source", async ({client}) => {
   await client.login();
   await client.selectPlaylist();

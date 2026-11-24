@@ -224,18 +224,66 @@ export function updateCast() {
   updatePlayer();
 }
 
+function releaseCastListeners() {
+  const session = state.castSession;
+  if (session && typeof cast !== "undefined" && cast.framework && cast.framework.SessionEventType) {
+    session.removeEventListener(cast.framework.SessionEventType.MEDIA_SESSION, updateCast);
+    session.removeEventListener(cast.framework.SessionEventType.VOLUME_CHANGED, updateCast);
+  }
+  if (state.castMedia) state.castMedia.removeUpdateListener(updateCast);
+  state.castMedia = null;
+  state.castSession = null;
+}
+
+export async function reconnectCast() {
+  const button = $("reconnect-cast");
+  button.disabled = true;
+  try {
+    const context = state.castContext;
+    if (!context || typeof context.getCurrentSession !== "function") {
+      message("Cast is unavailable in this browser.");
+      return;
+    }
+    if (state.busy && !state.castLoading) cancelPreparation();
+    releaseCastListeners();
+    updateCast();
+    if (context.getCurrentSession()) {
+      const media = getCastMediaSession(context.getCurrentSession());
+      message(media ? "Cast receiver connection refreshed." : "Cast receiver connection refreshed; no receiver playback is active.");
+      return;
+    }
+    if (typeof context.requestSession !== "function") {
+      message("Cast reconnects are unavailable in this browser.");
+      return;
+    }
+    message("Reconnecting to a Cast receiver…");
+    try {
+      await context.requestSession();
+      updateCast();
+      message(context.getCurrentSession() ? "Cast reconnected." : "No Cast receiver was selected.");
+    } catch {
+      updateCast();
+      message("Could not reconnect to a Cast receiver.");
+    }
+  } finally {
+    button.disabled = false;
+  }
+}
+
 export function onGcCastApiAvailable(available) {
-  if (!available) { $("cast-status").textContent = "Cast unavailable in this browser."; return; }
+  if (!available) { $("cast-status").textContent = "Cast unavailable in this browser."; $("reconnect-cast").disabled = true; return; }
   try {
     state.castContext = cast.framework.CastContext.getInstance();
     state.castContext.setOptions({ receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID, autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED });
     state.castContext.addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED, updateCast);
+    $("reconnect-cast").disabled = false;
     updateCast();
   } catch { $("cast-status").textContent = "Cast could not initialize."; }
 }
 
 export function castSdkLoadFailed() {
   $("cast-status").textContent = "Cast SDK could not be downloaded.";
+  $("reconnect-cast").disabled = true;
 }
 
 export async function castCommand(command) {
@@ -257,4 +305,5 @@ export async function castCommand(command) {
 export function initCast() {
   window.__onGCastApiAvailable = onGcCastApiAvailable;
   window.castSdkLoadFailed = castSdkLoadFailed;
+  $("reconnect-cast").addEventListener("click", reconnectCast);
 }

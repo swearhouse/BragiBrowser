@@ -1,5 +1,5 @@
 import { $, message } from "./dom.js";
-import { state } from "./state.js";
+import { state, volumeKey } from "./state.js";
 import { getCastMediaSession, castCommand, updateCast } from "./cast.js";
 import { advanceLocal, stopLocal } from "./localPlayback.js";
 import { cancelPreparation } from "./shell.js";
@@ -149,7 +149,29 @@ export function seekFromMediaSession(time, offset = 0) {
   return seekPlayback(time === null ? current + offset : time, selection);
 }
 
+function restoreLocalVolume() {
+  try {
+    const saved = localStorage.getItem(volumeKey);
+    if (saved === null) return;
+    const volume = Number(saved);
+    if (!Number.isFinite(volume) || volume < 0 || volume > 1) {
+      message("The saved volume setting is invalid; the default volume is used.");
+      return;
+    }
+    el.audio.volume = volume;
+    el.volume.value = String(volume);
+  } catch {
+    return;
+  }
+}
+
+function saveLocalVolume(value) {
+  try { localStorage.setItem(volumeKey, String(value)); }
+  catch { message("Browser storage is unavailable; volume changed for this page but was not saved."); }
+}
+
 export function initPlayer() {
+  restoreLocalVolume();
   setUpdatePlayer(updatePlayer);
   ["play", "pause", "ended", "emptied", "loadedmetadata", "durationchange", "timeupdate", "volumechange"].forEach(event => {
     el.audio.addEventListener(event, updatePlayer);
@@ -204,6 +226,8 @@ export function initPlayer() {
       try { await session.setVolume(volume); }
       catch { message("Could not change Chromecast volume."); }
       finally { state.volumePending = false; }
+    } else {
+      saveLocalVolume(Number(el.volume.value));
     }
     updatePlayer();
   });

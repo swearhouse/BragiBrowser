@@ -11,6 +11,9 @@
   --surface: #121720;
   --border: #252e3c;
   --muted: #8d9aab;
+  --ok: #8de0bd;
+  --warn: #ffd47f;
+  --error: #ffb4ad;
   --accent: #8de0bd;
   transition: --accent 1s linear;
 }
@@ -78,6 +81,8 @@ button.brand:hover:not(:disabled) { background: transparent; }
 .brand-mark { width: 28px; height: 28px; flex: none; object-fit: contain; }
 .brand-subtitle { color: var(--muted); font-size: 12px; font-weight: 500; letter-spacing: 0; }
 .cast { display: flex; align-items: center; gap: 8px; }
+.cast-reconnect { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
+.cast-reconnect .material-symbols-outlined { font-size: 17px; }
 google-cast-launcher { width: 34px; height: 34px; --connected-color: var(--accent); --disconnected-color: #edf1f7; }
 main { width: min(1440px, 100%); margin: 0 auto; padding: 28px; }
 .login-card, .settings-card {
@@ -197,11 +202,24 @@ dialog::backdrop { background: #000a; }
 .hint { margin-top: 16px; }
 .diagnostics-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 #diagnostics-status { margin-top: 12px; color: var(--muted); font-size: 12px; }
+.diagnostics-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.diagnostics-legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: currentColor; }
+.diagnostics-legend [data-tone=ok] { color: var(--ok); }
+.diagnostics-legend [data-tone=warn] { color: var(--warn); }
+.diagnostics-legend [data-tone=error] { color: var(--error); }
 .diagnostics-card h2 { margin: 26px 0 10px; color: var(--muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
 .diagnostics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin: 0; }
 .diagnostics-grid > div { min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: #0f141c; }
 .diagnostics-grid dt { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .diagnostics-grid dd { margin: 4px 0 0; color: #dce4ee; overflow-wrap: anywhere; }
+.diagnostics-grid dd[data-tone], #diagnostics-status[data-tone] { --tone-color: #dce4ee; color: var(--tone-color); }
+.diagnostics-grid dd[data-tone=ok], #diagnostics-status[data-tone=ok] { --tone-color: var(--ok); }
+.diagnostics-grid dd[data-tone=warn], #diagnostics-status[data-tone=warn] { --tone-color: var(--warn); }
+.diagnostics-grid dd[data-tone=error], #diagnostics-status[data-tone=error] { --tone-color: var(--error); }
+.diagnostics-grid dd[data-tone]::before, #diagnostics-status[data-tone]::before { display: inline-block; min-width: 5ch; margin-right: 8px; color: var(--tone-color); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.diagnostics-grid dd[data-tone=ok]::before, #diagnostics-status[data-tone=ok]::before { content: "OK"; }
+.diagnostics-grid dd[data-tone=warn]::before, #diagnostics-status[data-tone=warn]::before { content: "WARN"; }
+.diagnostics-grid dd[data-tone=error]::before, #diagnostics-status[data-tone=error]::before { content: "ERROR"; }
 .diagnostics-activity { max-height: 220px; margin: 0; padding-left: 20px; overflow: auto; color: #c7d0dc; font-size: 12px; overflow-wrap: anywhere; }
 .activity { margin-top: 18px; padding: 0 4px; color: #c7d0dc; overflow-wrap: anywhere; }
 .activity details { margin-top: 8px; color: var(--muted); font-size: 12px; }
@@ -222,7 +240,7 @@ dialog::backdrop { background: #000a; }
 @media (max-width: 820px) { .app-shell { grid-template-columns: 230px minmax(0, 1fr); gap: 18px; } main { padding: 18px; } }
 @media (max-width: 640px) {
   .account-bar { flex-wrap: wrap; padding: 12px 14px 0; }
-  #cast-status { display: none; }
+  #cast-status, .cast-reconnect span:last-child { display: none; }
   main { padding: 14px; }
   .app-shell { grid-template-columns: 1fr; gap: 8px; }
   .sidebar { padding: 16px; }
