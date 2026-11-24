@@ -130,8 +130,9 @@ available if the icon font cannot be loaded.
    a connected Cast receiver may also fetch it. The interface derives an accent
    from the current artwork when its host permits cross-origin image sampling;
    otherwise it uses the default accent.
-- When resolution includes loudness data, local playback applies the server's
-  `gain_db` through Web Audio. Cast receiver volume is unchanged.
+- When resolution includes loudness data and Loudness normalization is enabled
+  in Settings, local playback applies the server's `gain_db` through Web Audio.
+  Cast receiver volume is unchanged.
 - For local playback, the next track is resolved in the background while the
   current track plays. The temporary URL stays in memory and is discarded when
   the next track changes, playback stops, or the Cast session changes. A failed

@@ -1,6 +1,7 @@
 import { $, message } from "./dom.js";
-import { state, usernameKey, autoShuffleKey, visualizerKey, trackThumbsKey, youtubeSearchInstanceKey, defaultYoutubeSearchInstance } from "./state.js";
+import { state, usernameKey, autoShuffleKey, loudnessKey, visualizerKey, trackThumbsKey, youtubeSearchInstanceKey, defaultYoutubeSearchInstance } from "./state.js";
 import { prepareVisualizer, stopVisualizer, syncVisualizer } from "./visualizer.js";
+import { syncLoudness } from "./localPlayback.js";
 import { centerCurrentTrack, showTracks } from "./playlists.js";
 
 export let usernameSaveFailed = false;
@@ -31,6 +32,10 @@ export function initSettings() {
     const savedAutoShuffle = localStorage.getItem(autoShuffleKey);
     if (savedAutoShuffle === "true" || savedAutoShuffle === "false") $("auto-shuffle").checked = savedAutoShuffle === "true";
     else if (savedAutoShuffle !== null) message("The saved auto shuffle setting is invalid; auto shuffle is off.");
+    const savedLoudness = localStorage.getItem(loudnessKey);
+    if (savedLoudness === "true" || savedLoudness === "false") state.loudnessEnabled = savedLoudness === "true";
+    else if (savedLoudness !== null) message("The saved loudness setting is invalid; loudness normalization is on.");
+    $("loudness").checked = state.loudnessEnabled;
     const savedVisualizer = localStorage.getItem(visualizerKey);
     if (["bars", "mirrored", "radial", "wave", "off"].includes(savedVisualizer)) $("visualizer-mode").value = savedVisualizer;
     else if (savedVisualizer !== null) message("The saved visualizer setting is invalid; spectrum bars are selected.");
@@ -79,6 +84,16 @@ export function initSettings() {
     } catch {
       message("Browser storage is unavailable; auto shuffle changed for this page but was not saved.");
     }
+  });
+  $("loudness").addEventListener("change", () => {
+    state.loudnessEnabled = $("loudness").checked;
+    try {
+      localStorage.setItem(loudnessKey, String(state.loudnessEnabled));
+      message("Loudness setting saved.");
+    } catch {
+      message("Browser storage is unavailable; loudness changed for this page but was not saved.");
+    }
+    syncLoudness();
   });
   $("visualizer-mode").addEventListener("change", () => {
     try {

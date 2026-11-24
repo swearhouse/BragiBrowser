@@ -50,7 +50,7 @@
   h.queue = queue;
   h.initialPlaylists = initialPlaylists;
   h.createdPlaylists = createdPlaylists;
-  h.keys = ["bragi.username", "bragi.autoShuffle", "bragi.visualizer", "bragi.volume"];
+  h.keys = ["bragi.username", "bragi.autoShuffle", "bragi.loudness", "bragi.visualizer", "bragi.volume"];
 
   const mediaSession = {
     metadata: null, playbackState: "none", position: null, unsupported: null,

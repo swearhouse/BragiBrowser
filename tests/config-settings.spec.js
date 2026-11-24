@@ -6,6 +6,7 @@ test("fresh client starts with default settings and login view", async ({client}
   await expect(client.el("settings-panel")).toBeHidden();
   await expect(client.el("username")).toBeEditable();
   await expect(client.el("auto-shuffle")).not.toBeChecked();
+  await expect(client.el("loudness")).toBeChecked();
   await expect(client.el("visualizer-mode")).toHaveValue("bars");
   await expect(client.el("youtube-search-instance")).toHaveValue("https://yt.chocolatemoo53.com");
   await expect(client.el("password")).toHaveValue("");
@@ -36,6 +37,8 @@ test("settings opened from library save preferences and return to library", asyn
   await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.autoShuffle"))).toBe("true");
   await client.el("auto-shuffle").uncheck();
   await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.autoShuffle"))).toBe("false");
+  await client.el("loudness").uncheck();
+  await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.loudness"))).toBe("false");
   await client.el("visualizer-mode").selectOption("radial");
   await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.visualizer"))).toBe("radial");
   await client.el("youtube-search-instance").fill("https://invidious.example.com/");
@@ -47,6 +50,7 @@ test("settings opened from library save preferences and return to library", asyn
   await client.page.reload();
   await expect(client.el("username")).toHaveValue("alice");
   await expect(client.el("auto-shuffle")).not.toBeChecked();
+  await expect(client.el("loudness")).not.toBeChecked();
   await expect(client.el("visualizer-mode")).toHaveValue("radial");
   await expect(client.el("youtube-search-instance")).toHaveValue("https://invidious.example.com");
 });
@@ -55,6 +59,7 @@ test("preseeded settings are restored on a fresh page", async ({client}) => {
   await client.page.evaluate(() => {
     localStorage.setItem("bragi.username", "previous-user");
     localStorage.setItem("bragi.autoShuffle", "true");
+    localStorage.setItem("bragi.loudness", "false");
     localStorage.setItem("bragi.visualizer", "wave");
   });
   await client.page.reload();
@@ -62,6 +67,7 @@ test("preseeded settings are restored on a fresh page", async ({client}) => {
   await expect(client.el("username")).toBeEditable();
   await expect(client.el("password")).toHaveValue("");
   await expect(client.el("auto-shuffle")).toBeChecked();
+  await expect(client.el("loudness")).not.toBeChecked();
   await expect(client.el("visualizer-mode")).toHaveValue("wave");
   await expect(client.el("library")).toBeHidden();
   await client.el("username").fill("another-user");
@@ -81,6 +87,13 @@ test("invalid saved settings fall back with status messages", async ({client}) =
   await expect(client.el("status")).toContainText("The saved visualizer setting is invalid; spectrum bars are selected.");
   await expect(client.el("visualizer-mode")).toHaveValue("bars");
   await expect(client.el("auto-shuffle")).not.toBeChecked();
+});
+
+test("invalid saved loudness setting falls back with a status message", async ({client}) => {
+  await client.page.evaluate(() => localStorage.setItem("bragi.loudness", "sometimes"));
+  await client.page.reload();
+  await expect(client.el("status")).toContainText("The saved loudness setting is invalid; loudness normalization is on.");
+  await expect(client.el("loudness")).toBeChecked();
 });
 
 test("username is saved in browser storage as it is typed", async ({client}) => {
@@ -275,9 +288,12 @@ test("all storage failures are reported for settings and login", async ({client}
   await client.el("open-settings").click();
   await client.el("auto-shuffle").check();
   await client.waitForStatus("Browser storage is unavailable; auto shuffle changed for this page but was not saved.");
+  await client.el("loudness").uncheck();
+  await client.waitForStatus("Browser storage is unavailable; loudness changed for this page but was not saved.");
   await client.el("visualizer-mode").selectOption("wave");
   await client.waitForStatus("Browser storage is unavailable; the visualizer changed for this page but was not saved.");
   await expect(client.el("auto-shuffle")).toBeChecked();
+  await expect(client.el("loudness")).not.toBeChecked();
   await expect(client.el("visualizer-mode")).toHaveValue("wave");
   await client.el("close-settings").click();
   await client.el("username").fill("alice");
@@ -288,8 +304,9 @@ test("all storage failures are reported for settings and login", async ({client}
   expect(await client.page.evaluate(() => [
     localStorage.getItem("bragi.username"),
     localStorage.getItem("bragi.autoShuffle"),
+    localStorage.getItem("bragi.loudness"),
     localStorage.getItem("bragi.visualizer")
-  ])).toEqual([null, null, null]);
+  ])).toEqual([null, null, null, null]);
 });
 
 test("proxy authentication failure signs out and clears playback", async ({client}) => {

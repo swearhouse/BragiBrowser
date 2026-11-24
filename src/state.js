@@ -1,5 +1,6 @@
 export const usernameKey = "bragi.username";
 export const autoShuffleKey = "bragi.autoShuffle";
+export const loudnessKey = "bragi.loudness";
 export const visualizerKey = "bragi.visualizer";
 export const trackThumbsKey = "bragi.trackThumbs";
 export const youtubeSearchInstanceKey = "bragi.youtubeSearchInstance";
@@ -14,7 +15,7 @@ export const state = {
   seeking: null, volumeEditing: null, volumePending: false, autoScrollTimer: null,
   visualizerAccess: "unchecked", localHasPlayed: false, localDirectUrl: "", playlistController: null,
   editingPlaylistId: null, editingSong: null, replaceSong: null, youtubeSearchInstance: defaultYoutubeSearchInstance,
-  replaceSearchController: null, replacePreviewController: null, mediaSessionNeedsReclaim: false, trackThumbs: false
+  replaceSearchController: null, replacePreviewController: null, mediaSessionNeedsReclaim: false, trackThumbs: false, loudnessEnabled: true
 };
 
 export const visualizer = { context: null, source: null, analyser: null, sink: null, stream: null, frame: 0, failure: "", timeData: null, freqData: null, accent: "" };

@@ -36,6 +36,13 @@ async function setAutoShuffle(client, checked) {
   await clickById(client, "close-settings");
 }
 
+async function setLoudness(client, checked) {
+  await clickById(client, "open-settings");
+  if (checked) await client.el("loudness").check();
+  else await client.el("loudness").uncheck();
+  await clickById(client, "close-settings");
+}
+
 async function queueSong(client, index) {
   const menu = client.page.locator(".track-menu").nth(index);
   await menu.evaluate(element => { element.open = true; });
@@ -748,6 +755,36 @@ test("local playback applies server loudness gain", async ({client}) => {
   await expect.poll(async () => client.page.evaluate(() =>
     window.__harness.loudnessGains.some(node => Math.abs(node.gain.value - Math.pow(10, -0.99 / 20)) < 0.0001))).toBe(true);
   await expect(client.el("activity")).toContainText("Applied -0.99 dB loudness normalization.");
+});
+
+test("disabled loudness setting skips server loudness gain", async ({client}) => {
+  await client.page.evaluate(() => localStorage.setItem("bragi.loudness", "false"));
+  await client.page.reload();
+  await client.controls({resolveLoudness: {integrated_lufs: -13.01, target_lufs: -14, gain_db: -0.99, source: "youtube"}});
+  await client.login();
+  await client.selectPlaylist();
+  await client.playSelected();
+  await waitForLocalPlayback(client);
+  expect(await client.page.evaluate(() => window.__harness.loudnessGains.length)).toBe(0);
+  await expect(client.el("activity")).not.toContainText("Applied -0.99 dB loudness normalization.");
+});
+
+test("loudness setting takes effect during playback", async ({client}) => {
+  await client.controls({resolveLoudness: {integrated_lufs: -13.01, target_lufs: -14, gain_db: -0.99, source: "youtube"}});
+  await client.login();
+  await client.selectPlaylist();
+  await client.playSelected();
+  await waitForLocalPlayback(client);
+  await expect.poll(async () => client.page.evaluate(() =>
+    window.__harness.loudnessGains.some(node => Math.abs(node.gain.value - Math.pow(10, -0.99 / 20)) < 0.0001))).toBe(true);
+
+  await setLoudness(client, false);
+  await expect.poll(async () => client.page.evaluate(() =>
+    window.__harness.loudnessGains.some(node => node.gain.value === 1))).toBe(true);
+
+  await setLoudness(client, true);
+  await expect.poll(async () => client.page.evaluate(() =>
+    window.__harness.loudnessGains.some(node => Math.abs(node.gain.value - Math.pow(10, -0.99 / 20)) < 0.0001))).toBe(true);
 });
 
 test("invalid loudness data is ignored without changing playback", async ({client}) => {

@@ -262,9 +262,10 @@ and returns `audio/mp4` or `audio/webm`. It does not return an expiry time or
 guarantee that the receiver can play the selected stream.
 
 `loudness` is best-effort and may be `null`. When present, BragiBrowser applies
-`gain_db` as a Web Audio gain for local playback; invalid data is ignored and
-playback continues unchanged. Loudness applies to this resolved `url` only and
-does not change Chromecast receiver volume.
+`gain_db` as a Web Audio gain for local playback when Loudness normalization is
+enabled in Settings; invalid data is ignored and playback continues unchanged.
+Loudness applies to this resolved `url` only and does not change Chromecast
+receiver volume.
 
 Invalid input or an unsupported video URL returns 400; extraction or lack of
 a supported direct stream returns 422. This resolver requires HTTPS YouTube

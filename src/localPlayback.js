@@ -67,9 +67,8 @@ function ensureLoudnessGraph() {
   }
 }
 
-export function applyLoudness(value) {
-  const info = readLoudness(value);
-  loudness.info = info;
+export function syncLoudness() {
+  const info = state.loudnessEnabled ? loudness.info : null;
   loudness.gainDb = info ? info.gainDb : null;
   if (loudness.gain) loudness.gain.gain.value = 1;
   if (!info || Math.abs(info.gainDb) < 0.005) return false;
@@ -77,6 +76,11 @@ export function applyLoudness(value) {
   loudness.gain.gain.value = Math.pow(10, info.gainDb / 20);
   log(`Applied ${info.gainDb > 0 ? "+" : ""}${info.gainDb.toFixed(2)} dB loudness normalization.`);
   return true;
+}
+
+export function applyLoudness(value) {
+  loudness.info = readLoudness(value);
+  return syncLoudness();
 }
 
 export async function resumeLoudness() {
