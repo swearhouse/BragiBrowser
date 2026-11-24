@@ -1,5 +1,5 @@
 import { $, message, log } from "./dom.js";
-import { state, visualizer } from "./state.js";
+import { state, visualizer, loudness } from "./state.js";
 import { api, ApiError, requireQueue } from "./api.js";
 import { reportError, setBusy, cancelPreparation } from "./shell.js";
 import { prepareVisualizer, prepareAudioProxy, stopVisualizer, syncVisualizer } from "./visualizer.js";
@@ -28,7 +28,71 @@ export function stopLocal() {
   state.localDirectUrl = "";
   state.localUsingPrefetch = false;
   state.localRetry = null;
+  resetLoudness();
   updatePlayer();
+}
+
+function readLoudness(value) {
+  if (value == null) return null;
+  if (typeof value !== "object" || value.source !== "youtube" ||
+      !Number.isFinite(value.gain_db) || Math.abs(value.gain_db) > 30 ||
+      !Number.isFinite(value.integrated_lufs) || value.integrated_lufs < -70 || value.integrated_lufs > 0 ||
+      !Number.isFinite(value.target_lufs) || value.target_lufs < -70 || value.target_lufs > 0) {
+    log("Ignored invalid loudness data from the server.");
+    return null;
+  }
+  return { gainDb: value.gain_db, integratedLufs: value.integrated_lufs, targetLufs: value.target_lufs, source: value.source };
+}
+
+function ensureLoudnessGraph() {
+  if (loudness.gain) return true;
+  if (loudness.failure) return false;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  try {
+    if (!AudioContextClass) throw new Error("Unsupported");
+    const context = new AudioContextClass();
+    if (typeof context.createMediaElementSource !== "function") throw new Error("Unsupported");
+    const source = context.createMediaElementSource($("audio"));
+    const gain = context.createGain();
+    source.connect(gain);
+    gain.connect(context.destination);
+    loudness.context = context;
+    loudness.source = source;
+    loudness.gain = gain;
+    return true;
+  } catch {
+    loudness.failure = "Loudness normalization is unavailable in this browser.";
+    log(loudness.failure);
+    return false;
+  }
+}
+
+export function applyLoudness(value) {
+  const info = readLoudness(value);
+  loudness.info = info;
+  loudness.gainDb = info ? info.gainDb : null;
+  if (loudness.gain) loudness.gain.gain.value = 1;
+  if (!info || Math.abs(info.gainDb) < 0.005) return false;
+  if (!ensureLoudnessGraph()) return false;
+  loudness.gain.gain.value = Math.pow(10, info.gainDb / 20);
+  log(`Applied ${info.gainDb > 0 ? "+" : ""}${info.gainDb.toFixed(2)} dB loudness normalization.`);
+  return true;
+}
+
+export async function resumeLoudness() {
+  const context = loudness.context;
+  if (!context || context.state === "running" || context.state === "closed") return;
+  try { await context.resume(); }
+  catch {
+    loudness.failure = "Loudness normalization could not start.";
+    log(loudness.failure);
+  }
+}
+
+export function resetLoudness() {
+  if (loudness.gain) loudness.gain.gain.value = 1;
+  loudness.gainDb = null;
+  loudness.info = null;
 }
 
 export async function resolveAudio(video, signal) {
@@ -293,6 +357,7 @@ export async function nextLocal(generation, signal, direction = 1) {
     stopVisualizer();
     state.visualizerAccess = access;
     state.localHasPlayed = false;
+    applyLoudness(audio.loudness);
     state.localDirectUrl = audio.url;
     state.localUsingPrefetch = !!prefetched;
     if (access === "allowed") $("audio").crossOrigin = "anonymous";
@@ -305,6 +370,7 @@ export async function nextLocal(generation, signal, direction = 1) {
     $("queue-status").textContent = `Local playback: ${audio.title} (${state.localIndex + 1} of ${state.localQueue.length}).`;
     state.localStarting = true;
     try {
+      await resumeLoudness();
       await $("audio").play();
       if (generation === state.generation && !(access === "allowed" && state.visualizerAccess === "blocked")) message("Playing locally in this browser.");
       return;

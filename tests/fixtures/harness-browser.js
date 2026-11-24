@@ -19,6 +19,9 @@
   const paletteRequests = [];
   const insertSizes = [];
   const insertCounts = [];
+  const gainNodes = [];
+  const loudnessGains = [];
+  let mediaSourceCreated = false;
   const mediaSessionListeners = new Set();
   const mediaHandlers = {};
   const gates = {};
@@ -33,7 +36,7 @@
     localPaused: true, localTime: 0, localError: null, spectrumLevel: 0,
     lowFrequencyOnly: false, descendingSpectrum: false, captureSupported: true,
     captures: 0, stoppedCaptures: 0, audioContexts: 0, closedContexts: 0, storageFailure: null,
-    searchResults: null, searchError: 0
+    searchResults: null, searchError: 0, resolveLoudness: null
   };
   h.controls = controls;
   h.gates = gates;
@@ -41,6 +44,8 @@
   h.paletteRequests = paletteRequests;
   h.insertSizes = insertSizes;
   h.insertCounts = insertCounts;
+  h.gainNodes = gainNodes;
+  h.loudnessGains = loudnessGains;
   h.videos = videos;
   h.queue = queue;
   h.initialPlaylists = initialPlaylists;
@@ -73,6 +78,7 @@
     constructor() { this.state = "running"; this.destination = {}; controls.audioContexts++; }
     close() { this.state = "closed"; controls.closedContexts++; return Promise.resolve(); }
     createMediaStreamSource() { return {connect() {}, disconnect() {}}; }
+    createMediaElementSource() { mediaSourceCreated = true; return {connect() {}, disconnect() {}}; }
     createAnalyser() {
       return {
         fftSize: 256, frequencyBinCount: 128, connect() {}, disconnect() {},
@@ -84,7 +90,15 @@
         }
       };
     }
-    createGain() { return {gain: {value: 1}, connect() {}, disconnect() {}}; }
+    createGain() {
+      const node = {gain: {value: 1}, connect() {}, disconnect() {}};
+      gainNodes.push(node);
+      if (mediaSourceCreated) {
+        loudnessGains.push(node);
+        mediaSourceCreated = false;
+      }
+      return node;
+    }
     resume() { this.state = "running"; return Promise.resolve(); }
   };
 
@@ -134,6 +148,7 @@
   window.confirm = () => controls.allowReplace;
 
   const json = (body, status = 200) => new Response(JSON.stringify(body), {status, headers: {"Content-Type": "application/json"}});
+  const audioResponse = () => json({audio: {url: "https://media.example/signed-secret", title: "One", content_type: "audio/mp4", loudness: controls.resolveLoudness}});
   window.fetch = async (url, options = {}) => {
     const parsed = new URL(url);
     const path = parsed.pathname;
@@ -257,7 +272,7 @@
       const body = JSON.parse(options.body);
       if (controls.deferredPrefetchUrl && body.url === controls.deferredPrefetchUrl) {
         return new Promise((resolve, reject) => {
-          gates.finishPrefetch = () => resolve(json({audio: {url: "https://media.example/signed-secret", title: "One", content_type: "audio/mp4"}}));
+          gates.finishPrefetch = () => resolve(audioResponse());
           options.signal.addEventListener("abort", () => {
             controls.prefetchCancelled = true;
             reject(new DOMException("Aborted", "AbortError"));
@@ -266,7 +281,7 @@
       }
       if (mode === "queue-resolve-delay") {
         return new Promise(resolve => {
-          gates.finishQueueResolve = () => resolve(json({audio: {url: "https://media.example/signed-secret", title: "One", content_type: "audio/mp4"}}));
+          gates.finishQueueResolve = () => resolve(audioResponse());
         });
       }
       if (mode === "resolve-delay") {
@@ -280,7 +295,7 @@
         controls.badAttempts++;
         return json({}, 422);
       }
-      return json({audio: {url: "https://media.example/signed-secret", title: "One", content_type: "audio/mp4"}});
+      return audioResponse();
     }
     if (path.endsWith("/audio-proxy")) {
       if (mode === "proxy-delay") {

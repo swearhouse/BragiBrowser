@@ -739,6 +739,28 @@ test("volume storage failures are reported but still change the volume", async (
   expect(await client.page.evaluate(() => localStorage.getItem("bragi.volume"))).toBeNull();
 });
 
+test("local playback applies server loudness gain", async ({client}) => {
+  await client.controls({resolveLoudness: {integrated_lufs: -13.01, target_lufs: -14, gain_db: -0.99, source: "youtube"}});
+  await client.login();
+  await client.selectPlaylist();
+  await client.playSelected();
+  await waitForLocalPlayback(client);
+  await expect.poll(async () => client.page.evaluate(() =>
+    window.__harness.loudnessGains.some(node => Math.abs(node.gain.value - Math.pow(10, -0.99 / 20)) < 0.0001))).toBe(true);
+  await expect(client.el("activity")).toContainText("Applied -0.99 dB loudness normalization.");
+});
+
+test("invalid loudness data is ignored without changing playback", async ({client}) => {
+  await client.controls({resolveLoudness: {integrated_lufs: -13, target_lufs: -14, gain_db: "loud", source: "youtube"}});
+  await client.login();
+  await client.selectPlaylist();
+  await client.playSelected();
+  await waitForLocalPlayback(client);
+  await expect(client.el("activity")).toContainText("Ignored invalid loudness data from the server.");
+  expect(await client.page.evaluate(() => window.__harness.loudnessGains.length)).toBe(0);
+  expect(await audioProperty(client, "volume")).toBe(1);
+});
+
 test("stop clears the highlight, Media Session, and audio source", async ({client}) => {
   await client.login();
   await client.selectPlaylist();

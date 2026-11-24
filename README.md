@@ -127,9 +127,11 @@ available if the icon font cannot be loaded.
 - When a queue track includes an HTTPS `thumbnail_url`, the player shows it as
   artwork and includes it in Cast metadata. If it is absent, invalid, or cannot
   load, the player retains its placeholder. The image is fetched from its host;
-  a connected Cast receiver may also fetch it. The interface derives an accent
-  from the current artwork when its host permits cross-origin image sampling;
-  otherwise it uses the default accent.
+   a connected Cast receiver may also fetch it. The interface derives an accent
+   from the current artwork when its host permits cross-origin image sampling;
+   otherwise it uses the default accent.
+- When resolution includes loudness data, local playback applies the server's
+  `gain_db` through Web Audio. Cast receiver volume is unchanged.
 - For local playback, the next track is resolved in the background while the
   current track plays. The temporary URL stays in memory and is discarded when
   the next track changes, playback stops, or the Cast session changes. A failed

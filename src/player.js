@@ -1,7 +1,7 @@
 import { $, message } from "./dom.js";
 import { state, volumeKey } from "./state.js";
 import { getCastMediaSession, castCommand, updateCast } from "./cast.js";
-import { advanceLocal, stopLocal } from "./localPlayback.js";
+import { advanceLocal, stopLocal, resumeLoudness } from "./localPlayback.js";
 import { cancelPreparation } from "./shell.js";
 import { updateTrackHighlight } from "./playlists.js";
 import { updateArtwork, syncMediaSession, setUpdatePlayer } from "./artwork.js";
@@ -111,6 +111,7 @@ export async function setPlayback(shouldPlay) {
   const audio = el.audio;
   if (shouldPlay && (audio.paused || audio.ended)) {
     prepareVisualizer();
+    await resumeLoudness();
     try { await audio.play(); }
     catch { message("Browser playback could not start. Try Play again or choose another track."); }
   } else if (!shouldPlay && !audio.paused) audio.pause();
