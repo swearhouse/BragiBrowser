@@ -106,6 +106,7 @@ async function measureSpectrum(client, {level = 200, low = false, descending = f
     const {width, height} = canvas;
     const pixels = canvas.getContext("2d").getImageData(0, 0, width, height).data;
     const quadrants = [0, 0, 0, 0];
+    const occupiedColumns = new Set();
     let total = 0;
     let center = 0;
     let leftEdge = 0;
@@ -115,6 +116,7 @@ async function measureSpectrum(client, {level = 200, low = false, descending = f
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
       if (!pixels[(y * width + x) * 4 + 3]) continue;
       total++;
+      occupiedColumns.add(x);
       quadrants[(y >= height / 2 ? 2 : 0) + (x >= width / 2 ? 1 : 0)]++;
       if (Math.abs(x - width / 2) < height * 0.08 && Math.abs(y - height / 2) < height * 0.08) center++;
       if (x < width * 0.1) leftEdge++;
@@ -122,7 +124,7 @@ async function measureSpectrum(client, {level = 200, low = false, descending = f
       if (x >= width * 0.4 && x < width * 0.5) centerLeft++;
       if (x >= width * 0.5 && x < width * 0.6) centerRight++;
     }
-    return {total, quadrants, center, leftEdge, rightEdge, centerLeft, centerRight};
+    return {total, quadrants, center, leftEdge, rightEdge, centerLeft, centerRight, columns: occupiedColumns.size};
   }, {level, low, descending});
 }
 
@@ -560,6 +562,73 @@ test("radial spectrum surrounds a clear center", async ({client}) => {
   expect((await measureSpectrum(client, {level: 0})).total).toBe(0);
   expect(active.quadrants.every(count => count > 0)).toBe(true);
   expect(active.center).toBe(0);
+});
+
+test("kaleidoscope repeats a clear-centered symmetric pattern", async ({client}) => {
+  await client.login();
+  await client.selectPlaylist();
+  await client.playSelected();
+  await waitForLocalPlayback(client);
+  await setVisualizerMode(client, "kaleidoscope");
+  const active = await measureSpectrum(client);
+  expect(active.total).toBeGreaterThan(0);
+  expect((await measureSpectrum(client, {level: 0})).total).toBe(0);
+  expect(active.center).toBe(0);
+  expect(active.quadrants.every(count => count > 0)).toBe(true);
+  const left = active.quadrants[0] + active.quadrants[2];
+  const right = active.quadrants[1] + active.quadrants[3];
+  expect(Math.abs(left - right)).toBeLessThan(active.total * 0.1);
+});
+
+test("particles emit on transients, drift outward, and clear when silent", async ({client}) => {
+  await client.login();
+  await client.selectPlaylist();
+  await client.playSelected();
+  await waitForLocalPlayback(client);
+  await setVisualizerMode(client, "particles");
+  const active = await measureSpectrum(client);
+  expect(active.total).toBeGreaterThan(0);
+  const positions = () => client.page.evaluate(async () =>
+    (await window.__harness.app()).visualizerState.particles.map(particle => [particle.x, particle.y]));
+  const first = await positions();
+  expect(first.length).toBeGreaterThan(0);
+  await measureSpectrum(client);
+  const second = await positions();
+  expect(second[0]).not.toEqual(first[0]);
+  expect((await measureSpectrum(client, {level: 0})).total).toBe(0);
+  expect((await positions()).length).toBe(0);
+});
+
+test("spectrum area fills the profile and falls off with frequency", async ({client}) => {
+  await client.login();
+  await client.selectPlaylist();
+  await client.playSelected();
+  await waitForLocalPlayback(client);
+  await setVisualizerMode(client, "area");
+  const active = await measureSpectrum(client);
+  expect(active.total).toBeGreaterThan(0);
+  expect(active.quadrants.every(count => count > 0)).toBe(true);
+  expect((await measureSpectrum(client, {level: 0})).total).toBe(0);
+  const descending = await measureSpectrum(client, {descending: true});
+  expect(descending.quadrants[0] + descending.quadrants[2]).toBeGreaterThan(descending.quadrants[1] + descending.quadrants[3]);
+});
+
+test("spectrogram scrolls frequency history and clears on silence", async ({client}) => {
+  await client.login();
+  await client.selectPlaylist();
+  await client.playSelected();
+  await waitForLocalPlayback(client);
+  await setVisualizerMode(client, "spectrogram");
+  const first = await measureSpectrum(client);
+  expect(first.columns).toBeGreaterThan(0);
+  const history = await client.page.evaluate(async () => {
+    const canvas = (await window.__harness.app()).visualizerState.history;
+    return canvas && {width: canvas.width, height: canvas.height};
+  });
+  expect(history).toEqual({width: 160, height: 100});
+  const second = await measureSpectrum(client, {level: 120});
+  expect(second.columns).toBeGreaterThan(first.columns);
+  expect((await measureSpectrum(client, {level: 0})).total).toBe(0);
 });
 
 test("turning the visualizer off stops analysis without changing playback", async ({client}) => {

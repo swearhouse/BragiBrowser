@@ -18,5 +18,5 @@ export const state = {
   replaceSearchController: null, replacePreviewController: null, mediaSessionNeedsReclaim: false, trackThumbs: false, loudnessEnabled: true
 };
 
-export const visualizer = { context: null, source: null, analyser: null, sink: null, stream: null, frame: 0, failure: "", timeData: null, freqData: null, accent: "" };
+export const visualizer = { context: null, source: null, analyser: null, sink: null, stream: null, frame: 0, failure: "", timeData: null, freqData: null, accent: "", mode: "", particles: [], lastEnergy: 0, history: null };
 export const loudness = { context: null, source: null, gain: null, gainDb: null, info: null, failure: "" };

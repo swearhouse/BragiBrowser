@@ -96,6 +96,28 @@ test("invalid saved loudness setting falls back with a status message", async ({
   await expect(client.el("loudness")).toBeChecked();
 });
 
+test("kaleidoscope and particles visualizer modes are restored from storage", async ({client}) => {
+  await client.page.evaluate(() => localStorage.setItem("bragi.visualizer", "kaleidoscope"));
+  await client.page.reload();
+  await expect(client.el("visualizer-mode")).toHaveValue("kaleidoscope");
+  await client.el("open-settings").click();
+  await client.el("visualizer-mode").selectOption("particles");
+  await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.visualizer"))).toBe("particles");
+  await client.page.reload();
+  await expect(client.el("visualizer-mode")).toHaveValue("particles");
+});
+
+test("area and spectrogram visualizer modes are restored from storage", async ({client}) => {
+  await client.page.evaluate(() => localStorage.setItem("bragi.visualizer", "area"));
+  await client.page.reload();
+  await expect(client.el("visualizer-mode")).toHaveValue("area");
+  await client.el("open-settings").click();
+  await client.el("visualizer-mode").selectOption("spectrogram");
+  await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.visualizer"))).toBe("spectrogram");
+  await client.page.reload();
+  await expect(client.el("visualizer-mode")).toHaveValue("spectrogram");
+});
+
 test("username is saved in browser storage as it is typed", async ({client}) => {
   await client.el("username").fill("alice");
   await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.username"))).toBe("alice");

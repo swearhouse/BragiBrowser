@@ -37,7 +37,7 @@ export function initSettings() {
     else if (savedLoudness !== null) message("The saved loudness setting is invalid; loudness normalization is on.");
     $("loudness").checked = state.loudnessEnabled;
     const savedVisualizer = localStorage.getItem(visualizerKey);
-    if (["bars", "mirrored", "radial", "wave", "off"].includes(savedVisualizer)) $("visualizer-mode").value = savedVisualizer;
+    if (["bars", "mirrored", "radial", "kaleidoscope", "area", "particles", "spectrogram", "wave", "off"].includes(savedVisualizer)) $("visualizer-mode").value = savedVisualizer;
     else if (savedVisualizer !== null) message("The saved visualizer setting is invalid; spectrum bars are selected.");
     const savedThumbs = localStorage.getItem(trackThumbsKey);
     if (savedThumbs === "true" || savedThumbs === "false") state.trackThumbs = savedThumbs === "true";

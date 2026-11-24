@@ -154,9 +154,13 @@ available if the icon font cannot be loaded.
   routing also depends on the platform. Hardware volume buttons normally
   control the device or car, not the player or Chromecast volume slider.
 - **Settings** offers spectrum bars (the default), mirrored bars, a radial
-  spectrum, a waveform, or off. Spectrum bars spread the active frequency
+  spectrum, kaleidoscope, a filled spectrum area, particles, a scrolling
+  spectrogram, a waveform, or off. Spectrum bars spread the active frequency
   range across the card; mirrored bars spread the spectrum symmetrically from
-  the center. The visualizer only analyzes
+  the center; kaleidoscope repeats mirrored petals around a clear center; the
+  area mode fills the spectrum profile; particles emit from transients and drift
+  outward; the spectrogram scrolls frequency history over time. The visualizer
+  only analyzes
   browser playback, using a separate captured stream;
   it does not analyze Chromecast audio. It requires browser support for
   `AudioContext` and `captureStream()`, and a BragiServer with the audio proxy
