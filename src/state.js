@@ -3,7 +3,7 @@ export const autoShuffleKey = "bragi.autoShuffle";
 export const visualizerKey = "bragi.visualizer";
 export const trackThumbsKey = "bragi.trackThumbs";
 export const youtubeSearchInstanceKey = "bragi.youtubeSearchInstance";
-export const defaultYoutubeSearchInstance = "https://invidious.nerdvpn.de";
+export const defaultYoutubeSearchInstance = "https://yt.chocolatemoo53.com";
 
 export const state = {
   auth: null, playlists: [], selectedPlaylistId: null, controller: null, generation: 0, busy: false,

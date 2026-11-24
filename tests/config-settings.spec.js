@@ -7,7 +7,7 @@ test("fresh client starts with default settings and login view", async ({client}
   await expect(client.el("username")).toBeEditable();
   await expect(client.el("auto-shuffle")).not.toBeChecked();
   await expect(client.el("visualizer-mode")).toHaveValue("bars");
-  await expect(client.el("youtube-search-instance")).toHaveValue("https://invidious.nerdvpn.de");
+  await expect(client.el("youtube-search-instance")).toHaveValue("https://yt.chocolatemoo53.com");
   await expect(client.el("password")).toHaveValue("");
   expect(await client.page.evaluate(() => window.__harness.requests.length)).toBe(0);
 });
