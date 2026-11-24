@@ -88,6 +88,14 @@ main { width: min(1440px, 100%); margin: 0 auto; padding: 28px; }
   border-radius: 18px;
   background: var(--surface);
 }
+.diagnostics-card {
+  width: min(920px, 100%);
+  margin: 8vh auto 0;
+  padding: 30px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+}
 .login-card > p:not(.eyebrow) { margin-top: 6px; color: var(--muted); }
 .settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 24px; }
 .setting-field { display: grid; gap: 6px; margin-top: 24px; color: #bec8d5; font-weight: 600; }
@@ -98,6 +106,17 @@ dialog::backdrop { background: #000a; }
 #playlist-error, #song-error, #edit-song-error { color: #ffb4ad; font-size: 13px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .dialog-actions .danger { margin-right: auto; color: #ffb4ad; }
+.replace-search-row { display: flex; gap: 8px; }
+.replace-search-row input { flex: 1; }
+.replace-preview { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #0f141c; }
+.replace-preview audio { width: 100%; height: 36px; }
+.replace-results { display: grid; gap: 8px; max-height: 320px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.replace-result { display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: #0f141c; }
+.replace-result-meta { min-width: 0; }
+.replace-result-title { font-weight: 600; overflow-wrap: anywhere; }
+.replace-result-author { margin-top: 2px; font-size: 12px; }
+.replace-result-actions { display: flex; flex: none; gap: 8px; }
+.replace-result-actions button { min-height: 34px; padding: .35rem .65rem; font-size: 12px; }
 #login-form { display: grid; gap: 14px; margin-top: 24px; }
 #login-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
 #login-form input { width: 100%; }
@@ -176,6 +195,14 @@ dialog::backdrop { background: #000a; }
 .track-button[aria-current=true]:hover:not(:disabled) { background: #2c4a3e; background: color-mix(in srgb, var(--accent) 23%, #10151d); border-color: var(--accent); }
 .track-button[aria-current=true]::before { color: var(--accent); }
 .hint { margin-top: 16px; }
+.diagnostics-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+#diagnostics-status { margin-top: 12px; color: var(--muted); font-size: 12px; }
+.diagnostics-card h2 { margin: 26px 0 10px; color: var(--muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+.diagnostics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin: 0; }
+.diagnostics-grid > div { min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: #0f141c; }
+.diagnostics-grid dt { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.diagnostics-grid dd { margin: 4px 0 0; color: #dce4ee; overflow-wrap: anywhere; }
+.diagnostics-activity { max-height: 220px; margin: 0; padding-left: 20px; overflow: auto; color: #c7d0dc; font-size: 12px; overflow-wrap: anywhere; }
 .activity { margin-top: 18px; padding: 0 4px; color: #c7d0dc; overflow-wrap: anywhere; }
 .activity details { margin-top: 8px; color: var(--muted); font-size: 12px; }
 .activity summary { cursor: pointer; }
@@ -203,5 +230,7 @@ dialog::backdrop { background: #000a; }
   .workspace { gap: 8px; }
   .player-card, .queue-card { padding: 18px; border-radius: 15px; }
   .album-placeholder { width: 88px; height: 66px; }
-  .login-card, .settings-card { margin-top: 4vh; }
+  .login-card, .settings-card, .diagnostics-card { margin-top: 4vh; }
+  .diagnostics-card { padding: 18px; }
+  .diagnostics-grid { grid-template-columns: 1fr; }
 }

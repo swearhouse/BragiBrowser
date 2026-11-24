@@ -1,5 +1,5 @@
 import { $, message } from "./dom.js";
-import { state, usernameKey, autoShuffleKey, visualizerKey, trackThumbsKey } from "./state.js";
+import { state, usernameKey, autoShuffleKey, visualizerKey, trackThumbsKey, youtubeSearchInstanceKey, defaultYoutubeSearchInstance } from "./state.js";
 import { prepareVisualizer, stopVisualizer, syncVisualizer } from "./visualizer.js";
 import { centerCurrentTrack, showTracks } from "./playlists.js";
 
@@ -38,6 +38,17 @@ export function initSettings() {
     if (savedThumbs === "true" || savedThumbs === "false") state.trackThumbs = savedThumbs === "true";
     else if (savedThumbs !== null) message("The saved track thumbnails setting is invalid; thumbnails are hidden.");
     $("show-track-thumbs").checked = state.trackThumbs;
+    const savedSearchInstance = localStorage.getItem(youtubeSearchInstanceKey);
+    if (typeof savedSearchInstance === "string" && savedSearchInstance.trim()) {
+      try {
+        const url = new URL(savedSearchInstance.trim());
+        if (url.protocol === "https:") state.youtubeSearchInstance = url.origin;
+        else message("The saved YouTube search instance is invalid; the default instance is selected.");
+      } catch {
+        message("The saved YouTube search instance is invalid; the default instance is selected.");
+      }
+    }
+    $("youtube-search-instance").value = state.youtubeSearchInstance;
   } catch {
     message("Browser storage is unavailable; the username and settings cannot be remembered.");
   }
@@ -55,6 +66,7 @@ export function initSettings() {
   $("open-settings").addEventListener("click", () => {
     $("login-panel").hidden = true;
     $("library").hidden = true;
+    $("diagnostics-panel").hidden = true;
     $("settings-panel").hidden = false;
     $("settings-heading").focus();
     syncVisualizer();
@@ -88,5 +100,19 @@ export function initSettings() {
       message("Browser storage is unavailable; track thumbnails changed for this page but was not saved.");
     }
     if (state.displayedPlaylist) showTracks(state.displayedPlaylist, state.displayedIsQueue);
+  });
+  $("youtube-search-instance").addEventListener("change", () => {
+    const raw = $("youtube-search-instance").value.trim();
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== "https:") throw new Error("HTTPS required");
+      state.youtubeSearchInstance = url.origin;
+      $("youtube-search-instance").value = state.youtubeSearchInstance;
+      localStorage.setItem(youtubeSearchInstanceKey, state.youtubeSearchInstance);
+      message("YouTube search instance saved.");
+    } catch {
+      $("youtube-search-instance").value = state.youtubeSearchInstance;
+      message("Enter a valid HTTPS Invidious instance URL.");
+    }
   });
 }

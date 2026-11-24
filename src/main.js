@@ -5,6 +5,7 @@ import { initLocalPlayback } from "./localPlayback.js";
 import { initCast } from "./cast.js";
 import { initArtwork } from "./artwork.js";
 import { initPlayer } from "./player.js";
+import { initDiagnostics } from "./diagnostics.js";
 
 initSettings();
 initShell();
@@ -13,3 +14,4 @@ initLocalPlayback();
 initCast();
 initArtwork();
 initPlayer();
+initDiagnostics();

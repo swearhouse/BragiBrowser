@@ -1,6 +1,7 @@
 import { $, message } from "./dom.js";
 import { state } from "./state.js";
 import { api, ApiError, refreshPlaylists } from "./api.js";
+import { configuredServerBase } from "./config.js";
 import { reportError, setBusy } from "./shell.js";
 import { startPlayback } from "./localPlayback.js";
 import { queueNext, getCastMediaSession } from "./cast.js";
@@ -120,8 +121,9 @@ export function showTracks(playlist, isQueue = false) {
       queue.disabled = state.busy || state.castLoading;
       addAction("Open in YouTube", "open-song");
       const edit = addAction("Edit", "edit-song");
+      const replace = addAction("Replace...", "replace-song");
       const remove = addAction("Delete", "delete-song");
-      edit.disabled = remove.disabled = state.busy || state.castLoading || !!state.playlistController;
+      edit.disabled = replace.disabled = remove.disabled = state.busy || state.castLoading || !!state.playlistController;
       menu.append(toggle, actions);
       item.append(menu);
     }
@@ -302,9 +304,13 @@ export async function changePlaylist(action, name) {
   }
 }
 
+function songVideos(playlist) {
+  return playlist.videos.map(video => ({name: video.name, link: video.link}));
+}
+
 export function openSongEditor(playlist, index) {
   if (!state.auth || state.playlistController || state.busy || state.castLoading) return;
-  const videos = playlist.videos.map(video => ({name: video.name, link: video.link}));
+  const videos = songVideos(playlist);
   state.editingSong = {playlistId: playlist.id, index, videos};
   $("edit-song-form").reset();
   $("edit-song-name").textContent = videos[index].name;
@@ -314,25 +320,215 @@ export function openSongEditor(playlist, index) {
   $("edit-song-url").focus();
 }
 
+function resetReplacePreview() {
+  if (state.replacePreviewController) state.replacePreviewController.abort();
+  state.replacePreviewController = null;
+  const audio = $("replace-song-audio");
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+  $("replace-song-preview").hidden = true;
+  $("replace-song-preview-title").textContent = "";
+}
+
+function clearReplaceResults() {
+  $("replace-song-results").replaceChildren();
+  $("replace-song-empty").hidden = true;
+  $("replace-song-empty").textContent = "";
+}
+
+export function closeReplaceSongDialog() {
+  resetReplacePreview();
+  if (state.replaceSearchController) state.replaceSearchController.abort();
+  state.replaceSearchController = null;
+  clearReplaceResults();
+  $("replace-song-error").hidden = true;
+  $("replace-song-error").textContent = "";
+  $("replace-song-search").disabled = false;
+  state.replaceSong = null;
+  if ($("replace-song-dialog").open) $("replace-song-dialog").close();
+}
+
+function normalizeSearchInstance(value) {
+  const url = new URL(value);
+  if (url.protocol !== "https:") throw new Error("HTTPS required");
+  return url.origin;
+}
+
+async function searchYouTube(query, signal) {
+  const instance = normalizeSearchInstance(state.youtubeSearchInstance);
+  const url = new URL("/api/v1/search", instance);
+  url.searchParams.set("q", query);
+  url.searchParams.set("type", "video");
+  let response;
+  try {
+    response = await fetch(url, {signal, headers: {Accept: "application/json"}});
+  } catch (error) {
+    if (error.name === "AbortError") throw error;
+    throw new ApiError("Could not reach the YouTube search instance. Check the instance URL and CORS support.");
+  }
+  if (!response.ok) throw new ApiError(`Search failed (${response.status}). Try a different Invidious instance.`);
+  let data;
+  try { data = await response.json(); } catch { throw new ApiError("The search instance returned an invalid response."); }
+  if (!Array.isArray(data)) throw new ApiError("The search instance returned an invalid response.");
+  return data.filter(item => item && item.type === "video" && typeof item.videoId === "string" && /^[A-Za-z0-9_-]{11}$/.test(item.videoId))
+    .slice(0, 10).map(item => ({
+      videoId: item.videoId,
+      title: typeof item.title === "string" && item.title.trim() ? item.title : "Untitled video",
+      author: typeof item.author === "string" ? item.author : "",
+      url: `https://youtu.be/${item.videoId}`
+    }));
+}
+
+function renderReplaceResults(results) {
+  const list = $("replace-song-results");
+  list.replaceChildren();
+  if (!results.length) {
+    $("replace-song-empty").textContent = "No videos found.";
+    $("replace-song-empty").hidden = false;
+    return;
+  }
+  $("replace-song-empty").hidden = true;
+  results.forEach(result => {
+    const item = document.createElement("li");
+    item.className = "replace-result";
+    const meta = document.createElement("div");
+    meta.className = "replace-result-meta";
+    const title = document.createElement("p");
+    title.className = "replace-result-title";
+    title.textContent = result.title;
+    const author = document.createElement("p");
+    author.className = "muted replace-result-author";
+    author.textContent = result.author || "Unknown channel";
+    meta.append(title, author);
+    const actions = document.createElement("div");
+    actions.className = "replace-result-actions";
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.className = "preview-replace-song";
+    preview.textContent = "Preview";
+    preview.setAttribute("aria-label", `Preview ${result.title}`);
+    const replace = document.createElement("button");
+    replace.type = "button";
+    replace.className = "primary use-replace-song";
+    replace.textContent = "Replace";
+    replace.setAttribute("aria-label", `Replace with ${result.title}`);
+    replace.disabled = state.busy || state.castLoading || !!state.playlistController;
+    actions.append(preview, replace);
+    item.append(meta, actions);
+    item.dataset.url = result.url;
+    item.dataset.title = result.title;
+    list.append(item);
+  });
+}
+
+async function previewReplaceResult(result) {
+  if (!state.auth) return;
+  resetReplacePreview();
+  const controller = new AbortController();
+  state.replacePreviewController = controller;
+  $("replace-song-error").hidden = true;
+  $("replace-song-preview-title").textContent = `Loading preview: ${result.title}`;
+  $("replace-song-preview").hidden = false;
+  try {
+    const resolved = await api("/resolve", {method: "POST", body: {url: result.url}, signal: controller.signal});
+    const audioInfo = resolved && resolved.audio;
+    if (!audioInfo || typeof audioInfo.url !== "string") throw new ApiError("The server returned an invalid audio response.");
+    let src = audioInfo.url;
+    if (audioInfo.url.startsWith("https://")) {
+      const proxy = await api("/audio-proxy", {method: "POST", body: {url: audioInfo.url}, signal: controller.signal});
+      if (!proxy || typeof proxy.proxy_url !== "string") throw new ApiError("The server returned an invalid audio proxy response.");
+      src = new URL(proxy.proxy_url, await configuredServerBase() + "/").toString();
+    }
+    if (controller.signal.aborted || state.replacePreviewController !== controller) return;
+    const audio = $("replace-song-audio");
+    audio.crossOrigin = "anonymous";
+    audio.src = src;
+    $("replace-song-preview-title").textContent = `Preview: ${result.title}`;
+    await audio.play();
+  } catch (error) {
+    if (error.name === "AbortError" || state.replacePreviewController !== controller) return;
+    $("replace-song-preview").hidden = true;
+    $("replace-song-error").textContent = error.message || "Could not preview this video.";
+    $("replace-song-error").hidden = false;
+  } finally {
+    if (state.replacePreviewController === controller) state.replacePreviewController = null;
+  }
+}
+
+export async function openReplaceSongDialog(playlist, index) {
+  if (!state.auth || state.playlistController || state.busy || state.castLoading) return;
+  const videos = songVideos(playlist);
+  closeReplaceSongDialog();
+  state.replaceSong = {playlistId: playlist.id, index, videos, name: videos[index].name};
+  $("replace-song-form").reset();
+  $("replace-song-name").textContent = `Current song: ${videos[index].name}`;
+  $("replace-song-query").value = videos[index].name;
+  $("replace-song-dialog").showModal();
+  $("replace-song-query").focus();
+  await runReplaceSearch();
+}
+
+async function runReplaceSearch() {
+  if (!state.replaceSong || state.replaceSearchController) return;
+  const query = $("replace-song-query").value.trim();
+  if (!query) {
+    $("replace-song-error").textContent = "Enter a search query.";
+    $("replace-song-error").hidden = false;
+    return;
+  }
+  resetReplacePreview();
+  clearReplaceResults();
+  $("replace-song-error").hidden = true;
+  const controller = new AbortController();
+  state.replaceSearchController = controller;
+  $("replace-song-search").disabled = true;
+  $("replace-song-empty").textContent = "Searching...";
+  $("replace-song-empty").hidden = false;
+  try {
+    const results = await searchYouTube(query, controller.signal);
+    if (controller.signal.aborted || state.replaceSearchController !== controller) return;
+    renderReplaceResults(results);
+  } catch (error) {
+    if (error.name === "AbortError" || state.replaceSearchController !== controller) return;
+    $("replace-song-empty").hidden = true;
+    $("replace-song-error").textContent = error.message || "Search failed.";
+    $("replace-song-error").hidden = false;
+  } finally {
+    if (state.replaceSearchController === controller) {
+      state.replaceSearchController = null;
+      $("replace-song-search").disabled = false;
+    }
+  }
+}
+
 export function deleteSong(playlist, index) {
   if (!state.auth || state.playlistController || state.busy || state.castLoading) return;
-  const videos = playlist.videos.map(video => ({name: video.name, link: video.link}));
+  const videos = songVideos(playlist);
   if (!window.confirm(`Remove "${videos[index].name}" from this playlist?`)) return;
   state.editingSong = {playlistId: playlist.id, index, videos};
   changeSong("delete");
 }
 
-export async function changeSong(action, url) {
-  if (!state.auth || !state.editingSong || state.playlistController || state.busy || state.castLoading) return;
-  const {playlistId, index, videos} = state.editingSong;
+export async function changeSong(action, url, source = "edit") {
+  const target = source === "replace-dialog" ? state.replaceSong : state.editingSong;
+  if (!state.auth || !target || state.playlistController || state.busy || state.castLoading) return;
+  const {playlistId, index, videos} = target;
   const auth = state.auth;
   const controller = new AbortController();
   const expected = action === "delete" ? videos.filter((_, position) => position !== index) : videos;
   state.playlistController = controller;
-  $("edit-song-save").disabled = true;
-  $("edit-song-cancel").disabled = true;
-  $("edit-song-delete").disabled = true;
-  $("edit-song-error").hidden = true;
+  if (source === "replace-dialog") {
+    $("replace-song-search").disabled = true;
+    $("replace-song-cancel").disabled = true;
+    $("replace-song-error").hidden = true;
+    document.querySelectorAll(".use-replace-song, .preview-replace-song").forEach(button => { button.disabled = true; });
+  } else {
+    $("edit-song-save").disabled = true;
+    $("edit-song-cancel").disabled = true;
+    $("edit-song-delete").disabled = true;
+    $("edit-song-error").hidden = true;
+  }
   setBusy(state.busy);
   try {
     const result = await api(`/playlists/${encodeURIComponent(playlistId)}/tracks`, {
@@ -352,14 +548,16 @@ export async function changeSong(action, url) {
     }
     state.playlists = state.playlists.map(item => item.id === playlistId ? updated : item);
     syncSelectedPlaylist();
-    $("edit-song-dialog").close();
+    if (source === "replace-dialog") closeReplaceSongDialog();
+    else $("edit-song-dialog").close();
     message(`Song ${action === "delete" ? "removed" : "updated"}. Existing playback queues are unchanged.`);
   } catch (error) {
     if (state.auth !== auth || state.playlistController !== controller) return;
     if (error.status === 401) {
       reportError(error);
     } else if (error.status === 409 || error.status === 404 || error.uncertain || error.status >= 500) {
-      $("edit-song-dialog").close();
+      if (source === "replace-dialog") closeReplaceSongDialog();
+      else $("edit-song-dialog").close();
       try {
         const playlists = await refreshPlaylists(auth, controller.signal);
         if (state.auth !== auth || state.playlistController !== controller) return;
@@ -377,18 +575,27 @@ export async function changeSong(action, url) {
       const text = action === "replace" && error.status === 400 ? "Enter a valid HTTPS YouTube video URL." :
         action === "replace" && error.status === 422 ? "Could not retrieve the YouTube video title. Check that the video is available and try again." :
         error.message || "Could not change the song.";
-      if ($("edit-song-dialog").open) {
-        $("edit-song-error").textContent = text;
-        $("edit-song-error").hidden = false;
+      const dialogOpen = source === "replace-dialog" ? $("replace-song-dialog").open : $("edit-song-dialog").open;
+      const errorEl = source === "replace-dialog" ? $("replace-song-error") : $("edit-song-error");
+      if (dialogOpen) {
+        errorEl.textContent = text;
+        errorEl.hidden = false;
       } else message(text);
     }
   } finally {
     if (state.playlistController === controller) {
       state.playlistController = null;
-      $("edit-song-save").disabled = false;
-      $("edit-song-cancel").disabled = false;
-      $("edit-song-delete").disabled = false;
-      if (!$("edit-song-dialog").open) state.editingSong = null;
+      if (source === "replace-dialog") {
+        $("replace-song-search").disabled = false;
+        $("replace-song-cancel").disabled = false;
+        document.querySelectorAll(".use-replace-song, .preview-replace-song").forEach(button => { button.disabled = !!state.playlistController; });
+        if (!$("replace-song-dialog").open) state.replaceSong = null;
+      } else {
+        $("edit-song-save").disabled = false;
+        $("edit-song-cancel").disabled = false;
+        $("edit-song-delete").disabled = false;
+        if (!$("edit-song-dialog").open) state.editingSong = null;
+      }
       setBusy(state.busy);
     }
   }
@@ -414,6 +621,7 @@ export function initPlaylists() {
       if (action.classList.contains("queue-song")) return queueNext(video);
       if (action.classList.contains("open-song")) return openYouTube(video);
       if (action.classList.contains("edit-song")) return openSongEditor(playlist, index);
+      if (action.classList.contains("replace-song")) return openReplaceSongDialog(playlist, index);
       if (action.classList.contains("delete-song")) return deleteSong(playlist, index);
     }
     if (action && action.classList.contains("track-button")) {
@@ -576,6 +784,35 @@ export function initPlaylists() {
     const song = state.editingSong;
     if (song && !state.playlistController && window.confirm(`Remove "${song.videos[song.index].name}" from this playlist?`)) {
       changeSong("delete");
+    }
+  });
+  $("replace-song-cancel").addEventListener("click", closeReplaceSongDialog);
+  $("replace-song-dialog").addEventListener("close", () => {
+    if (!$("replace-song-dialog").open) {
+      resetReplacePreview();
+      if (state.replaceSearchController) state.replaceSearchController.abort();
+      state.replaceSearchController = null;
+      clearReplaceResults();
+      state.replaceSong = null;
+    }
+  });
+  $("replace-song-dialog").addEventListener("cancel", event => {
+    if (state.playlistController) event.preventDefault();
+  });
+  $("replace-song-form").addEventListener("submit", event => {
+    event.preventDefault();
+    runReplaceSearch();
+  });
+  $("replace-song-results").addEventListener("click", event => {
+    if (!(event.target instanceof Element)) return;
+    const item = event.target.closest(".replace-result");
+    if (!item) return;
+    const result = {url: item.dataset.url, title: item.dataset.title || "Selected video"};
+    if (event.target.closest(".preview-replace-song")) return previewReplaceResult(result);
+    if (event.target.closest(".use-replace-song")) {
+      if (!state.replaceSong) return;
+      state.editingSong = {playlistId: state.replaceSong.playlistId, index: state.replaceSong.index, videos: state.replaceSong.videos};
+      changeSong("replace", result.url, "replace-dialog");
     }
   });
 }

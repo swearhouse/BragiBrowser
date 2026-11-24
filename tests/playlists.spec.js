@@ -122,7 +122,7 @@ test("clearing the track search restores all saved tracks", async ({client}) => 
 test("track actions are ordered and close on Escape", async ({client}) => {
   await signedIn(client);
   const menu = menuAt(client, 0);
-  expect(await menu.locator("button").allTextContents()).toEqual(["Queue", "Open in YouTube", "Edit", "Delete"]);
+  expect(await menu.locator("button").allTextContents()).toEqual(["Queue", "Open in YouTube", "Edit", "Replace...", "Delete"]);
   await menu.locator("summary").click();
   expect(await menu.evaluate(element => element.open)).toBe(true);
   await client.page.keyboard.press("Escape");
@@ -553,4 +553,33 @@ test("queuing after playback inserts the song into the browser queue", async ({c
   await client.waitForStatus("Queued “One” to play next in this browser.");
   const state = await client.state();
   expect(state.localQueue.map(video => video.name)).toEqual(["One", "One", "Bad", "One"]);
+});
+
+test("replace song searches YouTube and previews before replacing", async ({client}) => {
+  await signedIn(client);
+  await client.controls({searchResults: Array.from({length: 10}, (_, index) => ({
+    type: "video", videoId: `abcde${index}fghij`.slice(0, 11), title: `Result ${index + 1}`, author: `Channel ${index + 1}`
+  }))});
+  await openMenu(client, 0);
+  await menuAt(client, 0).locator(".replace-song").click();
+  await expect(client.el("replace-song-dialog")).toBeVisible();
+  await expect(client.el("replace-song-query")).toHaveValue("One");
+  await expect(client.page.locator(".replace-result")).toHaveCount(10);
+  await client.page.locator(".replace-result").nth(1).locator(".preview-replace-song").click();
+  await expect(client.el("replace-song-preview")).toBeVisible();
+  await expect(client.el("replace-song-audio")).toHaveAttribute("src", /\/api\/v1\/audio-stream\?token=proxy-secret/);
+  await client.page.locator(".replace-result").nth(1).locator(".use-replace-song").click();
+  await expect(client.el("replace-song-dialog")).toBeHidden();
+  const patch = (await trackRequests(client, "PATCH")).at(-1);
+  expect(patch.body).toContain('"url":"https://youtu.be/abcde1fghij"');
+  await expect(client.page.locator(".track-button").first()).toContainText("Replacement title");
+});
+
+test("replace song shows search errors", async ({client}) => {
+  await signedIn(client);
+  await client.controls({searchError: 503});
+  await openMenu(client, 0);
+  await menuAt(client, 0).locator(".replace-song").click();
+  await expect(client.el("replace-song-error")).toContainText("Search failed (503)");
+  await expect(client.page.locator(".replace-result")).toHaveCount(0);
 });

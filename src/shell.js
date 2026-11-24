@@ -7,6 +7,7 @@ import { cancelLocalPrefetch, stopLocal, retryPrefetchedLocal } from "./localPla
 import { stopVisualizer } from "./visualizer.js";
 import { showTracks, renderPlaylists } from "./playlists.js";
 import { updatePlayer } from "./player.js";
+import { cancelDiagnostics, closeDiagnostics } from "./diagnostics.js";
 
 export function setBusy(value) {
   state.busy = value;
@@ -23,6 +24,9 @@ export function setBusy(value) {
     button.disabled = value || state.castLoading || !!state.playlistController;
   });
   document.querySelectorAll(".delete-song").forEach(button => {
+    button.disabled = value || state.castLoading || !!state.playlistController;
+  });
+  document.querySelectorAll(".replace-song").forEach(button => {
     button.disabled = value || state.castLoading || !!state.playlistController;
   });
   document.querySelectorAll(".queue-song").forEach(button => {
@@ -42,6 +46,7 @@ export function cancelPreparation() {
 }
 
 export function signOut(text = "Signed out. Cast playback was not stopped.") {
+  cancelDiagnostics();
   clearTimeout(state.autoScrollTimer);
   state.autoScrollTimer = null;
   if (state.playlistController) {
@@ -52,6 +57,7 @@ export function signOut(text = "Signed out. Cast playback was not stopped.") {
   if ($("playlist-dialog").open) $("playlist-dialog").close();
   if ($("song-dialog").open) $("song-dialog").close();
   if ($("edit-song-dialog").open) $("edit-song-dialog").close();
+  if ($("replace-song-dialog").open) $("replace-song-dialog").close();
   $("playlist-save").disabled = false;
   $("playlist-cancel").disabled = false;
   $("playlist-delete").disabled = false;
@@ -60,8 +66,15 @@ export function signOut(text = "Signed out. Cast playback was not stopped.") {
   $("edit-song-save").disabled = false;
   $("edit-song-cancel").disabled = false;
   $("edit-song-delete").disabled = false;
+  $("replace-song-search").disabled = false;
+  $("replace-song-cancel").disabled = false;
   state.editingPlaylistId = null;
   state.editingSong = null;
+  state.replaceSong = null;
+  if (state.replaceSearchController) state.replaceSearchController.abort();
+  if (state.replacePreviewController) state.replacePreviewController.abort();
+  state.replaceSearchController = null;
+  state.replacePreviewController = null;
   cancelPreparation();
   stopLocal();
   state.auth = null;
@@ -71,6 +84,7 @@ export function signOut(text = "Signed out. Cast playback was not stopped.") {
   state.castQueue = null;
   state.castToken = null;
   if (!$("settings-panel").hidden) closeSettings();
+  $("diagnostics-panel").hidden = true;
   $("password").value = "";
   $("login-panel").hidden = false;
   $("library").hidden = true;
@@ -109,7 +123,8 @@ export function initShell() {
       state.playlists = playlists;
       $("password").value = "";
       $("login-panel").hidden = true;
-      $("library").hidden = !$("settings-panel").hidden;
+      if (!$("diagnostics-panel").hidden) closeDiagnostics();
+      else $("library").hidden = !$("settings-panel").hidden;
       $("signout").hidden = false;
       renderPlaylists();
       message(!usernameSaveFailed ? "Connected. Choose a playlist and output." :

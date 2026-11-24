@@ -7,6 +7,7 @@ test("fresh client starts with default settings and login view", async ({client}
   await expect(client.el("username")).toBeEditable();
   await expect(client.el("auto-shuffle")).not.toBeChecked();
   await expect(client.el("visualizer-mode")).toHaveValue("bars");
+  await expect(client.el("youtube-search-instance")).toHaveValue("https://invidious.nerdvpn.de");
   await expect(client.el("password")).toHaveValue("");
   expect(await client.page.evaluate(() => window.__harness.requests.length)).toBe(0);
 });
@@ -37,6 +38,9 @@ test("settings opened from library save preferences and return to library", asyn
   await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.autoShuffle"))).toBe("false");
   await client.el("visualizer-mode").selectOption("radial");
   await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.visualizer"))).toBe("radial");
+  await client.el("youtube-search-instance").fill("https://invidious.example.com/");
+  await client.el("youtube-search-instance").press("Tab");
+  await expect.poll(async () => client.page.evaluate(() => localStorage.getItem("bragi.youtubeSearchInstance"))).toBe("https://invidious.example.com");
   await client.el("close-settings").click();
   await expect(client.el("library")).toBeVisible();
   await expect(client.el("settings-panel")).toBeHidden();
@@ -44,6 +48,7 @@ test("settings opened from library save preferences and return to library", asyn
   await expect(client.el("username")).toHaveValue("alice");
   await expect(client.el("auto-shuffle")).not.toBeChecked();
   await expect(client.el("visualizer-mode")).toHaveValue("radial");
+  await expect(client.el("youtube-search-instance")).toHaveValue("https://invidious.example.com");
 });
 
 test("preseeded settings are restored on a fresh page", async ({client}) => {

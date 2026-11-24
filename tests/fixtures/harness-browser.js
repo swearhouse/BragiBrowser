@@ -32,7 +32,8 @@
     frameworkMediaAvailable: true, otherMediaSessions: [],
     localPaused: true, localTime: 0, localError: null, spectrumLevel: 0,
     lowFrequencyOnly: false, descendingSpectrum: false, captureSupported: true,
-    captures: 0, stoppedCaptures: 0, audioContexts: 0, closedContexts: 0, storageFailure: null
+    captures: 0, stoppedCaptures: 0, audioContexts: 0, closedContexts: 0, storageFailure: null,
+    searchResults: null, searchError: 0
   };
   h.controls = controls;
   h.gates = gates;
@@ -134,10 +135,19 @@
 
   const json = (body, status = 200) => new Response(JSON.stringify(body), {status, headers: {"Content-Type": "application/json"}});
   window.fetch = async (url, options = {}) => {
-    const path = new URL(url).pathname;
+    const parsed = new URL(url);
+    const path = parsed.pathname;
     requests.push({url, path, method: options.method, body: options.body, headers: options.headers,
       redirect: options.redirect, credentials: options.credentials, referrerPolicy: options.referrerPolicy, cache: options.cache});
     const mode = controls.mode;
+    if (path === "/api/v1/search" && parsed.origin !== location.origin) {
+      if (controls.searchError) return new Response("search failed", {status: controls.searchError});
+      const q = parsed.searchParams.get("q") || "";
+      const results = Array.isArray(controls.searchResults) ? controls.searchResults : Array.from({length: 10}, (_, index) => ({
+        type: "video", videoId: `srch${String(index).padStart(7, "0")}`.slice(0, 11), title: `${q} result ${index + 1}`, author: `Author ${index + 1}`
+      }));
+      return json(results);
+    }
     if (path.endsWith("/server-url.txt")) {
       if (controls.configFailure === "network") throw new TypeError("network failure");
       if (controls.configFailure === "missing") return new Response("Not found", {status: 404});

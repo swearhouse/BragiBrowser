@@ -19,6 +19,7 @@
     <button id="toggle-sidebar" class="brand" type="button" aria-controls="playlist-sidebar" aria-expanded="true" aria-label="Bragi: Hide playlist sidebar" title="Hide playlist sidebar"><img class="brand-mark" src="bragi.png" alt=""><span>Bragi</span><span class="brand-subtitle">Browser</span></button>
     <div class="cast"><span id="cast-status">Waiting for Cast…</span><google-cast-launcher aria-label="Connect to Chromecast"></google-cast-launcher></div>
     <button id="open-settings" class="button-with-icon" type="button"><span class="material-symbols-outlined" aria-hidden="true">settings</span><span>Settings</span></button>
+    <button id="open-diagnostics" class="button-with-icon" type="button"><span class="material-symbols-outlined" aria-hidden="true">monitoring</span><span>Diagnostics</span></button>
     <button id="signout" class="button-with-icon" type="button" hidden><span class="material-symbols-outlined" aria-hidden="true">logout</span><span>Sign out</span></button>
   </header>
   <main>
@@ -53,6 +54,55 @@
       <p class="hint">Browser playback only. Some streams do not permit audio analysis; enabling it during playback may take effect on the next track.</p>
       <label class="checkbox"><input type="checkbox" id="show-track-thumbs"><span>Show track thumbnails</span></label>
       <p class="hint">Display thumbnail images next to tracks in playlist rows.</p>
+      <label class="setting-field">YouTube search instance
+        <input id="youtube-search-instance" type="url" autocomplete="off" spellcheck="false" placeholder="https://invidious.example">
+      </label>
+      <p class="hint">Used by track Replace search. Must be an HTTPS Invidious instance with CORS enabled for this client origin.</p>
+    </section>
+
+    <section id="diagnostics-panel" class="diagnostics-card" aria-labelledby="diagnostics-heading" hidden>
+      <div class="settings-heading">
+        <h1 id="diagnostics-heading" tabindex="-1">Diagnostics</h1>
+        <button id="close-diagnostics" class="button-with-icon" type="button"><span class="material-symbols-outlined" aria-hidden="true">arrow_back</span><span>Back</span></button>
+      </div>
+      <p class="hint">Checks and a copyable report for troubleshooting. The report never includes passwords, authorization headers, audio URLs, Cast tokens, or search query strings.</p>
+      <div class="diagnostics-actions">
+        <button id="diagnostics-run" class="primary" type="button">Run checks</button>
+        <button id="diagnostics-copy" type="button">Copy report</button>
+      </div>
+      <p id="diagnostics-status" role="status">Ready.</p>
+      <h2>Connection</h2>
+      <dl class="diagnostics-grid">
+        <div><dt>Server configuration</dt><dd id="diag-server-config">Not loaded</dd></div>
+        <div><dt>Server API</dt><dd id="diag-server-api">Not checked</dd></div>
+        <div><dt>Account</dt><dd id="diag-account">Signed out</dd></div>
+        <div><dt>Credentials</dt><dd id="diag-credentials">No authorization header in memory.</dd></div>
+        <div><dt>YouTube search instance</dt><dd id="diag-search-instance">—</dd></div>
+        <div><dt>Search endpoint</dt><dd id="diag-search-check">Not checked</dd></div>
+      </dl>
+      <h2>Playback</h2>
+      <dl class="diagnostics-grid">
+        <div><dt>Output</dt><dd id="diag-output">This browser</dd></div>
+        <div><dt>Cast SDK</dt><dd id="diag-cast-sdk">Unknown</dd></div>
+        <div><dt>Cast session</dt><dd id="diag-cast-session">No receiver connected</dd></div>
+        <div><dt>Queue</dt><dd id="diag-queue">None</dd></div>
+        <div><dt>Track</dt><dd id="diag-track">No local track loaded.</dd></div>
+        <div><dt>Audio source</dt><dd id="diag-audio-source">None</dd></div>
+        <div><dt>Audio state</dt><dd id="diag-audio-state">Paused · 0:00 / 0:00 · readyState 0</dd></div>
+        <div><dt>Visualizer</dt><dd id="diag-visualizer">—</dd></div>
+      </dl>
+      <h2>Browser</h2>
+      <dl class="diagnostics-grid">
+        <div><dt>Page origin</dt><dd id="diag-page">—</dd></div>
+        <div><dt>Secure context</dt><dd id="diag-secure">—</dd></div>
+        <div><dt>Media Session</dt><dd id="diag-media-session">—</dd></div>
+        <div><dt>Audio analysis</dt><dd id="diag-audio-analysis">—</dd></div>
+        <div><dt>Dialogs</dt><dd id="diag-dialog">—</dd></div>
+        <div><dt>Browser storage</dt><dd id="diag-storage">—</dd></div>
+      </dl>
+      <h2>Recent activity</h2>
+      <ol id="diagnostics-activity" class="diagnostics-activity"></ol>
+      <p id="diagnostics-activity-empty" class="muted" hidden>No activity yet.</p>
     </section>
 
     <section id="library" class="app-shell" hidden>
@@ -144,6 +194,27 @@
           <button id="edit-song-delete" class="danger" type="button">Delete song</button>
           <button id="edit-song-cancel" type="button">Cancel</button>
           <button id="edit-song-save" class="primary" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="replace-song-dialog" aria-labelledby="replace-song-title">
+      <form id="replace-song-form">
+        <h2 id="replace-song-title">Replace song</h2>
+        <p id="replace-song-name" class="hint"></p>
+        <label for="replace-song-query">Search YouTube</label>
+        <div class="replace-search-row">
+          <input id="replace-song-query" type="search" required autocomplete="off">
+          <button id="replace-song-search" class="primary" type="submit">Search</button>
+        </div>
+        <p id="replace-song-error" role="alert" hidden></p>
+        <div id="replace-song-preview" class="replace-preview" hidden>
+          <p id="replace-song-preview-title" class="muted"></p>
+          <audio id="replace-song-audio" controls preload="none"></audio>
+        </div>
+        <ol id="replace-song-results" class="replace-results" aria-label="Search results"></ol>
+        <p id="replace-song-empty" class="muted" role="status" hidden></p>
+        <div class="dialog-actions">
+          <button id="replace-song-cancel" type="button">Close</button>
         </div>
       </form>
     </dialog>
